@@ -177,8 +177,8 @@ upgrade(Node, NewVersion, Config) ->
     VersionMap = orddict:store(N, NewVersion, rt_config:get(rt_versions)),
     rt_config:set(rt_versions, VersionMap),
     case Config of
-	same -> ok;
-	_ -> update_app_config(Node, Config)
+        same -> ok;
+        _ -> update_app_config(Node, Config)
     end,
     start(Node),
     rt:wait_until_pingable(Node),
@@ -389,6 +389,18 @@ deploy_clusters(ClusterConfigs) ->
             DeployedClusters
     end.
 
+configure_nodes(Nodes, Configs) ->
+    %% Set initial config
+    add_default_node_config(Nodes),
+    rt:pmap(fun({_, default}) ->
+                    ok;
+               ({Node, {cuttlefish, Config}}) ->
+                    set_conf(Node, Config);
+               ({Node, Config}) ->
+                    update_app_config(Node, Config)
+            end,
+            lists:zip(Nodes, Configs)).
+
 deploy_nodes(NodeConfig) ->
     Path = relpath(root),
     lager:info("Riak path: ~p", [Path]),
@@ -529,7 +541,7 @@ stop_all(DevPath) ->
             rt:pmap(gen_stop_fun(Tmout), lists:zip(Devs, Nodes)),
             kill_stragglers(DevPath, Tmout);
         _ ->
-	    lager:info("~s is not a directory.", [DevPath])
+            lager:info("~s is not a directory.", [DevPath])
     end,
     ok.
 

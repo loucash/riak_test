@@ -45,8 +45,6 @@
          wait_until_nodes_agree_about_ownership/1,
          is_pingable/1]).
 
--define(HARNESS, (rt_config:get(rt_harness))).
-
 %% @doc Start the specified Riak node
 start(Node) ->
     rt_harness:start(Node).

@@ -707,10 +707,10 @@ whats_up() ->
     Up = [rpc:call(Node, os, cmd, ["pwd"]) || Node <- nodes()],
     [io:format("  ~s~n",[string:substr(Dir, 1, length(Dir)-1)]) || Dir <- Up].
 
-node_version(Node) -> 
+node_version(Node) ->
     rt_harness_util:node_version(Node).
 
-attach(Node, Expected) -> 
+attach(Node, Expected) ->
     rt_harness_util:attach(Node, Expected).
 
 attach_direct(Node, Expected) ->
@@ -812,7 +812,7 @@ teardown() ->
 to_list(X) when is_integer(X) -> integer_to_list(X);
 to_list(X) when is_float(X)   -> float_to_list(X);
 to_list(X) when is_atom(X)    -> atom_to_list(X);
-to_list(X) when is_list(X)    -> X.	%Assumed to be a string
+to_list(X) when is_list(X)    -> X.     %Assumed to be a string
 
 to_binary(X) when is_binary(X) ->
     X;
