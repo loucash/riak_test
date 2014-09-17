@@ -50,7 +50,8 @@
          check_fullsync/3,
          validate_completed_fullsync/6,
          validate_intercepted_fullsync/5,
-         get_aae_fullsync_activity/0
+         get_aae_fullsync_activity/0,
+         validate_aae_fullsync/4
         ]).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -636,7 +637,62 @@ validate_intercepted_fullsync(InterceptTarget,
 
 get_aae_fullsync_activity() ->
     lager:info("Combing aae logs"),
-    lists:append([ find_repl_logs(Log) || Log <- rt:get_node_logs() ]).
+    Logs = lists:append([ find_repl_logs(Log) || Log <- rt:get_node_logs() ]),
+%    lists:foreach(fun( E ) ->
+%                          lager:info("LOG: ~p", [E])
+%                  end,
+%                  Logs),
+    Logs.
+
+
+validate_aae_fullsync(NVal, QVal, TotalKeys, KeysChanged) ->
+    Logs = get_aae_fullsync_activity(),
+    {Partitions, TotalEstimate, Diffs} =
+        lists:foldl(fun({_Time, PartitionIndex, aae_fullsync_started}, {Parts, Total, Diffs}) ->
+                            {ordsets:add_element(PartitionIndex, Parts), Total, Diffs};
+                       ({_Time, _PartitionIndex, estimated_number_of_keys, Estimate}, {Parts, Total, Diffs}) ->
+                            {Parts, Total+Estimate, Diffs};
+                       ({_Time, _PartitionIndex, finish_sending, _Bloom, _, PartDiffs}, {Parts, Total, Diffs}) ->
+                            {Parts, Total, PartDiffs+Diffs};
+                       (_, Acc) ->
+                            Acc
+                    end,
+                    {[], 0, 0},
+                    Logs),
+
+    case QVal == ordsets:size(Partitions) of
+        true ->
+            lager:info("OK - number of partitions: ~p", [QVal]);
+        false ->
+            lager:error("Wrong number of partitions in fullsync: ~p vs ~p", [QVal, ordsets:size(Partitions)])
+    end,
+
+    EstimateSkew = TotalEstimate - (TotalKeys * NVal) ,
+    EstPercentage = EstimateSkew / TotalEstimate,
+
+    case abs(EstPercentage) < 0.1 of
+        true ->
+            lager:info("Estimate is ~p% off - OK", [ EstPercentage*100 ]);
+        false ->
+            lager:error("Estimate is ~p% off - BAD", [ EstPercentage*100 ])
+    end,
+
+
+    DiffSkew = Diffs - KeysChanged,
+    DiffPercentage = DiffSkew / KeysChanged,
+    case abs(DiffPercentage) < 0.1 of
+        true ->
+            lager:info("Diff count is ~p% off - OK", [ DiffPercentage*100 ]);
+        false ->
+            lager:error("Diff count is ~p% off - BAD", [ DiffPercentage*100 ])
+    end,
+
+    ok.
+
+
+
+
+
 
 find_repl_logs({Path, Port}) ->
     case re:run(Path, "console\.log$") of
@@ -696,7 +752,7 @@ find_line_content4(Port, TimeStamp, Data) ->
     Re = "AAE fullsync source completed partition ([0-9]+)",
     case re:run(Data, Re, [{capture, all_but_first, list}]) of
         {match, [PartIndex]} ->
-            [{ TimeStamp, PartIndex, aae_fullsync_completed } | find_line(Port, file:read_line(Port))];
+            [{ TimeStamp, list_to_integer(PartIndex), aae_fullsync_completed } | find_line(Port, file:read_line(Port))];
         nomatch ->
             find_line_content5(Port, TimeStamp, Data)
     end.
@@ -705,7 +761,7 @@ find_line_content5(Port, TimeStamp, Data) ->
     Re = "AAE fullsync source worker started for partition ([0-9]+)",
     case re:run(Data, Re, [{capture, all_but_first, list}]) of
         {match, [PartIndex]} ->
-            [{ TimeStamp, PartIndex, aae_fullsync_started } | find_line(Port, file:read_line(Port))];
+            [{ TimeStamp, list_to_integer(PartIndex), aae_fullsync_started } | find_line(Port, file:read_line(Port))];
         nomatch ->
             find_line(Port, file:read_line(Port))
     end.
