@@ -49,7 +49,8 @@
          read_from_cluster/6,
          check_fullsync/3,
          validate_completed_fullsync/6,
-         validate_intercepted_fullsync/5
+         validate_intercepted_fullsync/5,
+         get_aae_fullsync_activity/0
         ]).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -622,3 +623,90 @@ validate_intercepted_fullsync(InterceptTarget,
 
     %% Wait until AAE trees are compueted on the rebooted node.
     rt:wait_until_aae_trees_built([InterceptTarget]).
+
+
+%%
+%% emit list of
+%%
+%%   {TimeStamp, PartitionIndex, aae_fullsync_started}
+%%   {TimeStamp, PartitionIndex, estimated_number_of_keys, EstimatedNymberOfKeys}
+%%   {TimeStamp, PartitionIndex, finish_sending, BloomOrNot, BloomCount, DiffCount}
+%%   {TimeStamp, PartitionIndex, aae_fullsync_completed}
+%%
+
+get_aae_fullsync_activity() ->
+    lager:info("Combing aae logs"),
+    lists:append([ find_repl_logs(Log) || Log <- rt:get_node_logs() ]).
+
+find_repl_logs({Path, Port}) ->
+    case re:run(Path, "console\.log$") of
+        {match, _} ->
+            find_line(Port, file:read_line(Port));
+        nomatch ->
+            %% save time not looking through other logs
+            []
+    end.
+
+find_line(Port, {ok, Data}) ->
+    Re = "^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}).([0-9]{3})", 
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, DateMatch} ->
+            TimeStamp = [ list_to_integer(E) || E <- DateMatch ],
+            find_line_content1(Port, erlang:list_to_tuple(TimeStamp), Data);
+        nomatch ->
+            find_line(Port, file:read_line(Port))
+    end;
+find_line(_, _) ->
+    [].
+
+find_line_content1(Port, TimeStamp, Data) ->
+    Re = "EstimatedNrKeys ([0-9]*) for partition ([0-9]+)",
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, [NumKeys, PartIndex]} ->
+            [{ TimeStamp, PartIndex, estimated_number_of_keys, list_to_integer(NumKeys)}
+             | find_line(Port, file:read_line(Port))];
+        nomatch ->
+            find_line_content2(Port, TimeStamp, data)
+    end.
+
+
+find_line_content2(Port, TimeStamp, Data) ->
+    Re = "No Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, [BloomCount, DiffCount, PartIndex]} ->
+            [{ TimeStamp, list_to_integer(PartIndex), finish_sending, false, list_to_integer(BloomCount), list_to_integer(DiffCount)}
+             | find_line(Port, file:read_line(Port))];
+        nomatch ->
+            find_line_content3(Port, TimeStamp, data)
+    end.
+
+
+find_line_content3(Port, TimeStamp, Data) ->
+    Re = "Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, [BloomCount, DiffCount, PartIndex]} ->
+            [{ TimeStamp, list_to_integer(PartIndex), finish_sending, false, list_to_integer(BloomCount), list_to_integer(DiffCount)}
+             | find_line(Port, file:read_line(Port))];
+        nomatch ->
+            find_line_content4(Port, TimeStamp, data)
+    end.
+
+
+find_line_content4(Port, TimeStamp, Data) ->
+    Re = "AAE fullsync source completed partition ([0-9]+)",
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, [PartIndex]} ->
+            [{ TimeStamp, PartIndex, aae_fullsync_completed } | find_line(Port, file:read_line(Port))];
+        nomatch ->
+            find_line_content5(Port, TimeStamp, data)
+    end.
+
+find_line_content5(Port, TimeStamp, Data) ->
+    Re = "AAE fullsync source worker started for partition ([0-9]+)",
+    case re:run(Data, Re, [{capture, all_but_first, list}]) of
+        {match, [PartIndex]} ->
+            [{ TimeStamp, PartIndex, aae_fullsync_started } | find_line(Port, file:read_line(Port))];
+        nomatch ->
+            find_line(Port, file:read_line(Port))
+    end.
+
