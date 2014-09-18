@@ -51,7 +51,7 @@
          validate_completed_fullsync/6,
          validate_intercepted_fullsync/5,
          get_aae_fullsync_activity/0,
-         validate_aae_fullsync/4
+         validate_aae_fullsync/6
         ]).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -549,7 +549,7 @@ write_to_cluster(Node, Start, End, Bucket) ->
 
 %% @doc Write a series of keys and ensure they are all written.
 write_to_cluster(Node, Start, End, Bucket, Quorum) ->
-    lager:info("Writing ~p keys to node ~p.", [End - Start, Node]),
+    lager:info("Writing ~p keys to node ~p.", [End - Start + 1, Node]),
     ?assertEqual([],
                  repl_util:do_write(Node, Start, End, Bucket, Quorum)).
 
@@ -561,7 +561,7 @@ read_from_cluster(Node, Start, End, Bucket, Errors) ->
 %% @doc Read from cluster a series of keys, asserting a certain number
 %%      of errors.
 read_from_cluster(Node, Start, End, Bucket, Errors, Quorum) ->
-    lager:info("Reading ~p keys from node ~p.", [End - Start, Node]),
+    lager:info("Reading ~p keys from node ~p.", [End - Start + 1, Node]),
     Res2 = rt:systest_read(Node, Start, End, Bucket, Quorum, <<>>, true),
     ?assertEqual(Errors, length(Res2)).
 
@@ -638,131 +638,159 @@ validate_intercepted_fullsync(InterceptTarget,
 get_aae_fullsync_activity() ->
     lager:info("Combing aae logs"),
     Logs = lists:append([ find_repl_logs(Log) || Log <- rt:get_node_logs() ]),
-%    lists:foreach(fun( E ) ->
-%                          lager:info("LOG: ~p", [E])
-%                  end,
-%                  Logs),
     Logs.
 
+select_logs_in_time_interval(From,To,Logs) ->
+    Duration = timer:now_diff(To,From),
 
-validate_aae_fullsync(NVal, QVal, TotalKeys, KeysChanged) ->
+    lager:info("Extracting logs from ~p to ~p", [From, To]),
+
+    RelevantLogs = lists:foldl(fun({Time, Entry}, Acc) ->
+                                       case timer:now_diff(Time,From) of
+                                           T when T >= 0, T =< Duration ->
+                                               [Entry|Acc];
+                                           _ ->
+                                               Acc
+                                       end
+                               end,
+                               [],
+                               Logs),
+    RelevantLogs.
+
+validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged) ->
     Logs = get_aae_fullsync_activity(),
-    {Partitions, TotalEstimate, Diffs} =
-        lists:foldl(fun({_Time, PartitionIndex, aae_fullsync_started}, {Parts, Total, Diffs}) ->
-                            {ordsets:add_element(PartitionIndex, Parts), Total, Diffs};
-                       ({_Time, _PartitionIndex, estimated_number_of_keys, Estimate}, {Parts, Total, Diffs}) ->
-                            {Parts, Total+Estimate, Diffs};
-                       ({_Time, _PartitionIndex, finish_sending, _Bloom, _, PartDiffs}, {Parts, Total, Diffs}) ->
-                            {Parts, Total, PartDiffs+Diffs};
+
+    RelevantLogs = select_logs_in_time_interval(From, {14110000,38604,655676}, Logs),
+
+%    lists:foreach(fun(Log) ->
+%                          lager:info("SELECTED: ~p", [Log])
+%                  end,
+%                  lists:sort(RelevantLogs)),
+
+    {Partitions, TotalEstimate, BloomCount, Diffs} =
+        lists:foldl(fun({PartitionIndex, aae_fullsync_started}, {Parts, Total, BloomCount, Diffs}) ->
+                            {ordsets:add_element(PartitionIndex, Parts), Total, BloomCount, Diffs};
+                       ({_PartitionIndex, estimated_number_of_keys, Estimate}, {Parts, Total, BloomCount, Diffs}) ->
+                            {Parts, Total+Estimate, BloomCount, Diffs};
+                       ({_PartitionIndex, finish_sending, Bloom, _, PartDiffs}, {Parts, Total, BloomCount, Diffs}) ->
+                            {Parts, Total, BloomCount + if Bloom -> 1; true -> 0 end, PartDiffs+Diffs};
                        (_, Acc) ->
                             Acc
                     end,
-                    {[], 0, 0},
-                    Logs),
+                    {[], 0, 0, 0},
+                    RelevantLogs),
+
+    lager:info("AAE expected fullsync stats: partitions:~p, total_estimate:~p, diffs:~p", [QVal, TotalKeys * NVal, KeysChanged]),
+    lager:info("AAE found    fullsync stats: partitions:~p, total_estimate:~p, diffs:~p", [length(Partitions), TotalEstimate, Diffs]),
+    lager:info("AAE ~p partitions used bloom filter / fold", [BloomCount]),
 
     case QVal == ordsets:size(Partitions) of
         true ->
             lager:info("OK - number of partitions: ~p", [QVal]);
         false ->
-            lager:error("Wrong number of partitions in fullsync: ~p vs ~p", [QVal, ordsets:size(Partitions)])
+            lager:error("BAD - Wrong number of partitions in fullsync: ~p vs ~p", [QVal, ordsets:size(Partitions)])
     end,
 
     EstimateSkew = TotalEstimate - (TotalKeys * NVal) ,
     EstPercentage = EstimateSkew / TotalEstimate,
 
-    case abs(EstPercentage) < 0.1 of
+    case abs(EstPercentage) =< 0.15 of
         true ->
-            lager:info("Estimate is ~p% off - OK", [ EstPercentage*100 ]);
+            lager:info("OK - Estimate is ~p% off", [ EstPercentage*100 ]);
         false ->
-            lager:error("Estimate is ~p% off - BAD", [ EstPercentage*100 ])
+            lager:error("BAD - Estimate is ~p% off", [ EstPercentage*100 ])
     end,
 
 
     DiffSkew = Diffs - KeysChanged,
     DiffPercentage = DiffSkew / KeysChanged,
-    case abs(DiffPercentage) < 0.1 of
+    case abs(DiffPercentage) =< 0.05 of
         true ->
-            lager:info("Diff count is ~p% off - OK", [ DiffPercentage*100 ]);
+            lager:info("OK - Diff count is ~p% off", [ DiffPercentage*100 ]);
         false ->
-            lager:error("Diff count is ~p% off - BAD", [ DiffPercentage*100 ])
+            lager:error("BAD - Diff count is ~p% off", [ DiffPercentage*100 ])
     end,
 
     ok.
 
-
-
-
-
-
 find_repl_logs({Path, Port}) ->
     case re:run(Path, "console\.log$") of
         {match, _} ->
-            find_line(Port, file:read_line(Port));
+            match_loop(Port, file:read_line(Port), aae_fullsync_patterns(), []);
         nomatch ->
             %% save time not looking through other logs
             []
     end.
 
-find_line(Port, {ok, Data}) ->
-    Re = "^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}).([0-9]{3})", 
+match_loop(Port, {ok, Data}, Matchers, Acc) ->
+    case lists:foldl(fun({Patt,Fun}, {next, Data2}) ->
+                             case re:run(Data2, Patt, [{capture, all_but_first, list}]) of
+                                 {match, Match} ->
+                                     {done, Fun(Match)};
+                                 nomatch ->
+                                     {next, Data2}
+                             end;
+                        (_, {done, Value}) ->
+                             {done, Value}
+                     end,
+                     {next, Data},
+                     Matchers) of
+        {done, Value} ->
+            {ok, TimeStamp} = extract_timestamp(Data),
+            match_loop(Port, file:read_line(Port), Matchers, [{TimeStamp, Value}|Acc]);
+        {next, _} ->
+            match_loop(Port, file:read_line(Port), Matchers, Acc)
+    end;
+match_loop(_, _, _, Acc) ->
+    lists:reverse(Acc).
+
+extract_timestamp(Data) ->
+    Re = "^([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}).([0-9]{3})",
     case re:run(Data, Re, [{capture, all_but_first, list}]) of
         {match, DateMatch} ->
-            TimeStamp = [ list_to_integer(E) || E <- DateMatch ],
-            find_line_content1(Port, erlang:list_to_tuple(TimeStamp), Data);
+            [Y,M,D, Hr,Min,Sec, Millis] = [ list_to_integer(E) || E <- DateMatch ],
+            [UTC] = calendar:local_time_to_universal_time_dst({{Y,M,D}, {Hr,Min,Sec}}),
+            GregorianSeconds = calendar:datetime_to_gregorian_seconds(UTC) - 62167219200,
+            TimeStamp = {GregorianSeconds div 1000000, GregorianSeconds rem 1000000, Millis * 1000},
+            {ok, TimeStamp};
         nomatch ->
-            find_line(Port, file:read_line(Port))
-    end;
-find_line(_, _) ->
-    [].
-
-find_line_content1(Port, TimeStamp, Data) ->
-    Re = "EstimatedNrKeys ([0-9]*) for partition ([0-9]+)",
-    case re:run(Data, Re, [{capture, all_but_first, list}]) of
-        {match, [NumKeys, PartIndex]} ->
-            [{ TimeStamp, PartIndex, estimated_number_of_keys, list_to_integer(NumKeys)}
-             | find_line(Port, file:read_line(Port))];
-        nomatch ->
-            find_line_content2(Port, TimeStamp, Data)
+            error
     end.
 
+aae_fullsync_patterns() ->
+    [ { "EstimatedNrKeys ([0-9]*) for partition ([0-9]+)",
+        fun([NumKeys, PartIndex]) ->
+                {list_to_integer(PartIndex), estimated_number_of_keys, list_to_integer(NumKeys)}
+        end },
 
-find_line_content2(Port, TimeStamp, Data) ->
-    Re = "No Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
-    case re:run(Data, Re, [{capture, all_but_first, list}]) of
-        {match, [BloomCount, DiffCount, PartIndex]} ->
-            [{ TimeStamp, list_to_integer(PartIndex), finish_sending, false, list_to_integer(BloomCount), list_to_integer(DiffCount)}
-             | find_line(Port, file:read_line(Port))];
-        nomatch ->
-            find_line_content3(Port, TimeStamp, Data)
-    end.
+      { "No Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
+        fun([BloomCount, DiffCount, PartIndex]) ->
+                {list_to_integer(PartIndex), finish_sending, false, list_to_integer(BloomCount), list_to_integer(DiffCount)}
+        end },
 
+      { "Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
+        fun([BloomCount, DiffCount, PartIndex]) ->
+                { list_to_integer(PartIndex), finish_sending, true, list_to_integer(BloomCount), list_to_integer(DiffCount)}
+        end },
 
-find_line_content3(Port, TimeStamp, Data) ->
-    Re = "Bloom folding over ([0-9]+)/([0-9]+) differences for partition ([0-9]+) with EstimatedNrKeys",
-    case re:run(Data, Re, [{capture, all_but_first, list}]) of
-        {match, [BloomCount, DiffCount, PartIndex]} ->
-            [{ TimeStamp, list_to_integer(PartIndex), finish_sending, false, list_to_integer(BloomCount), list_to_integer(DiffCount)}
-             | find_line(Port, file:read_line(Port))];
-        nomatch ->
-            find_line_content4(Port, TimeStamp, Data)
-    end.
+      { "AAE fullsync source completed partition ([0-9]+)",
+        fun([PartIndex]) ->
+                {list_to_integer(PartIndex), aae_fullsync_completed }
+        end },
 
+      { "AAE fullsync source worker started for partition ([0-9]+)",
+        fun([PartIndex]) ->
+                { list_to_integer(PartIndex), aae_fullsync_started }
+        end },
 
-find_line_content4(Port, TimeStamp, Data) ->
-    Re = "AAE fullsync source completed partition ([0-9]+)",
-    case re:run(Data, Re, [{capture, all_but_first, list}]) of
-        {match, [PartIndex]} ->
-            [{ TimeStamp, list_to_integer(PartIndex), aae_fullsync_completed } | find_line(Port, file:read_line(Port))];
-        nomatch ->
-            find_line_content5(Port, TimeStamp, Data)
-    end.
+      { "Directly sent ([0-9]+) differences inline for partition ([0-9]+)",
+        fun([DirectCount,PartIndex]) ->
+                { list_to_integer(PartIndex), aae_direct, inline, list_to_integer(DirectCount) }
+        end },
 
-find_line_content5(Port, TimeStamp, Data) ->
-    Re = "AAE fullsync source worker started for partition ([0-9]+)",
-    case re:run(Data, Re, [{capture, all_but_first, list}]) of
-        {match, [PartIndex]} ->
-            [{ TimeStamp, list_to_integer(PartIndex), aae_fullsync_started } | find_line(Port, file:read_line(Port))];
-        nomatch ->
-            find_line(Port, file:read_line(Port))
-    end.
+      { "Directly sending ([0-9]+) differences for partition ([0-9]+)",
+        fun([DirectCount,PartIndex]) ->
+                { list_to_integer(PartIndex), aae_direct, buffered, list_to_integer(DirectCount) }
+        end }
 
+      ].
