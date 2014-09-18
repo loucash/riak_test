@@ -703,12 +703,22 @@ validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged) ->
 
 
     DiffSkew = Diffs - KeysChanged,
-    DiffPercentage = DiffSkew / KeysChanged,
-    case abs(DiffPercentage) =< 0.05 of
-        true ->
-            lager:info("OK - Diff count is ~p% off", [ DiffPercentage*100 ]);
-        false ->
-            lager:error("BAD - Diff count is ~p% off", [ DiffPercentage*100 ])
+    case KeysChanged of
+        0 ->
+            case DiffSkew of
+                0 ->
+                    lager:info("OK - diff count is 0");
+                _ ->
+                    lager:info("BAD - diff count is ~p; should be 0", [Diffs])
+            end;
+        _ ->
+            DiffPercentage = DiffSkew / KeysChanged,
+            case abs(DiffPercentage) =< 0.05 of
+                true ->
+                    lager:info("OK - Diff count is ~p% off", [ DiffPercentage*100 ]);
+                false ->
+                    lager:error("BAD - Diff count is ~p% off", [ DiffPercentage*100 ])
+            end
     end,
 
     ok.
