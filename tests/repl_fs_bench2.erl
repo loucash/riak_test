@@ -22,7 +22,9 @@ confirm() ->
     %%          {aae, true, 100},
     %%          {aae, true, 1000}],
     %% Modes = [{aae, true, 0}],
-    Modes = [{aae, true, 75}],
+    Modes = [{aae, true, buffered, 1000, 5},
+             {aae, true, inline,   1000, 5}
+             ],
 %%    Delays = [0, 10, 50, 100, 200],
     Delays = [0],
     Results = [{Strategy, Delay, bench(Strategy, Delay)} || Strategy <- Modes,
@@ -32,7 +34,7 @@ confirm() ->
               "==================================================~n", [Results]),
     pass.
 
-bench({Strategy, Pipeline, Direct}, Delay) ->
+bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
     Config = [{riak_core, [{ring_creation_size, ?Q_VALUE},
                            {default_bucket_props, [{n_val, ?N_VALUE},
                                                    {allow_mult, false}]}]},
@@ -41,8 +43,9 @@ bench({Strategy, Pipeline, Direct}, Delay) ->
                          {anti_entropy_concurrency, 100}]},
               {riak_repl, [{fullsync_strategy, Strategy},
                            {fullsync_pipeline, Pipeline},
-                           {fullsync_direct, Direct},
-                           {diff_percentage, 5},
+                           {fullsync_direct_limit, DirectLimit},
+                           {fullsync_direct_mode, DirectMode},
+                           {fullsync_direct_percentage_limit, DiffPercent},
                            {fullsync_on_connect, false},
                            {fullsync_interval, disabled},
                            {max_fssource_retries, infinity},
