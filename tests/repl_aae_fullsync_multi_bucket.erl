@@ -57,7 +57,7 @@ aae_fs_test_diff_n_buckets() ->
 
 
     %% N, NumKeys, Div
-    Tests = [{1, 100000, 10}, {3, 50000, 10}, {5 ,10000, 2}],    
+    Tests = [{1, 30000, 10}, {3, 20000, 10}, {5 ,10000, 2}],
     
     TestsAndBuckets =
         lists:map(fun({N, NumKeys, Div}) ->
@@ -75,16 +75,19 @@ aae_fs_test_diff_n_buckets() ->
                         end,
                         %% populate them with data
                         repl_util:write_to_cluster(AFirst, 1, NumKeys, TestBucket),
-                        repl_util:write_to_cluster(BFirst, 1, NumKeys, TestBucket),
-                        rt:wait_until_aae_trees_built(ANodes ++ BNodes),
+                        repl_util:write_to_cluster(BFirst, 1, 1, TestBucket),
                         {TestBucket, N, NumKeys, Div}
                 end,Tests),
     
-    %% Perform fullsync of an empty cluster.
     rt:wait_until_aae_trees_built(ANodes ++ BNodes),
     repl_util:start_and_wait_until_fullsync_complete(LeaderA),
-    
-    lists:foreach(fun({TestBucket, N, NumKeys, Div}) ->
+
+    NumTotalKeys = lists:sum([NumKeys || {_N, NumKeys, _Div} <- Tests]),
+    MeanN = lists:sum([N * NumKeys || {N, NumKeys, _Div} <- Tests]) / NumTotalKeys,
+
+    lager:info("TotalKey ~p MeanN ~p", [NumTotalKeys, MeanN]),
+
+    lists:foreach(fun({TestBucket, _N, NumKeys, Div}) ->
                           %% Write keys and perform fullsync.
                           StartTime = erlang:now(),
                           ChangedKeys = NumKeys div Div,
@@ -94,5 +97,5 @@ aae_fs_test_diff_n_buckets() ->
                                                    start_and_wait_until_fullsync_complete,
                                                    [LeaderA]),
                           EndTime = erlang:now(),
-                          repl_util:validate_aae_fullsync(StartTime, EndTime, N, ?Q_VALUE, NumKeys, ChangedKeys)
+                          repl_util:validate_aae_fullsync(StartTime, EndTime, MeanN, ?Q_VALUE, NumTotalKeys, ChangedKeys, false)
                   end, TestsAndBuckets).

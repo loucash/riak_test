@@ -51,7 +51,7 @@
          validate_completed_fullsync/6,
          validate_intercepted_fullsync/5,
          get_aae_fullsync_activity/0,
-         validate_aae_fullsync/6,
+         validate_aae_fullsync/7,
          update_props/5,
          get_current_bucket_props/2
         ]).
@@ -675,52 +675,9 @@ select_logs_in_time_interval(From,To,Logs) ->
                                Logs),
     RelevantLogs.
 
-validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged) ->
-    Logs = get_aae_fullsync_activity(),
-
-    RelevantLogs = select_logs_in_time_interval(From, {14110000,38604,655676}, Logs),
-
-%    lists:foreach(fun(Log) ->
-%                          lager:info("SELECTED: ~p", [Log])
-%                  end,
-%                  lists:sort(RelevantLogs)),
-
-    Partitions =
-        lists:foldl(fun({Time, {PI, aae_fullsync_started}}, Dict) ->
-                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
-                            orddict:update( PI,
-                                            fun(Stat) -> Stat#aae_stat{ start_time=Time } end,
-                                            Dict2);
-                       ({Time, {PI, aae_fullsync_completed}}, Dict) ->
-                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
-                            orddict:update( PI,
-                                            fun(Stat) -> Stat#aae_stat{ end_time=Time } end,
-                                            Dict2);
-                       ({Time, {PI, estimated_number_of_keys, Estimate}}, Dict) ->
-                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
-                            orddict:update( PI,
-                                            fun(Stat) -> Stat#aae_stat{ key_estimate=Estimate, estimate_time=Time } end,
-                                            Dict2);
-                       ({Time, {PI, finish_sending, Bloom, BloomCount, PartDiffs}}, Dict) ->
-                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
-                            orddict:update( PI,
-                                            fun(Stat) -> Stat#aae_stat{
-                                                           use_bloom=Bloom,
-                                                           bloom_count=BloomCount,
-                                                           diff_count=PartDiffs,
-                                                           bloom_time=Time
-                                                         } end,
-                                            Dict2);
-                       ({Time, {PI, aae_direct, Mode, Count}}, Dict) ->
-                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
-                            orddict:update( PI,
-                                            fun(Stat) -> Stat#aae_stat{ direct_count=Count, direct_mode=Mode, direct_time=Time } end,
-                                            Dict2);
-                       (_, Acc) ->
-                            Acc
-                    end,
-                    orddict:new(),
-                    lists:sort(RelevantLogs)),
+validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged, ValidatePartitions) ->
+    
+    Partitions = get_partitions(From),
 
     Diffs         = orddict:fold(fun(_, #aae_stat{ diff_count=N }, Acc) -> N+Acc end, 0, Partitions),
     TotalEstimate = orddict:fold(fun(_, #aae_stat{ key_estimate=N }, Acc) -> N+Acc end, 0, Partitions),
@@ -767,9 +724,56 @@ validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged) ->
             end
     end,
 
-    validate_partitions(Partitions, NVal, QVal, TotalKeys),
-
+    case ValidatePartitions of
+        true ->
+            validate_partitions(Partitions, NVal, QVal, TotalKeys);
+        _ ->
+            ok
+    end,
     ok.
+
+get_partitions(From) ->
+
+    Logs = get_aae_fullsync_activity(),
+    RelevantLogs = select_logs_in_time_interval(From, {14110000,38604,655676}, Logs),
+
+    Partitions =
+        lists:foldl(fun({Time, {PI, aae_fullsync_started}}, Dict) ->
+                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
+                            orddict:update( PI,
+                                            fun(Stat) -> Stat#aae_stat{ start_time=Time } end,
+                                            Dict2);
+                       ({Time, {PI, aae_fullsync_completed}}, Dict) ->
+                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
+                            orddict:update( PI,
+                                            fun(Stat) -> Stat#aae_stat{ end_time=Time } end,
+                                            Dict2);
+                       ({Time, {PI, estimated_number_of_keys, Estimate}}, Dict) ->
+                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
+                            orddict:update( PI,
+                                            fun(Stat) -> Stat#aae_stat{ key_estimate=Estimate, estimate_time=Time } end,
+                                            Dict2);
+                       ({Time, {PI, finish_sending, Bloom, BloomCount, PartDiffs}}, Dict) ->
+                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
+                            orddict:update( PI,
+                                            fun(Stat) -> Stat#aae_stat{
+                                                                       use_bloom=Bloom,
+                                                                       bloom_count=BloomCount,
+                                                                       diff_count=PartDiffs,
+                                                                       bloom_time=Time
+                                                                      } end,
+                                            Dict2);
+                       ({Time, {PI, aae_direct, Mode, Count}}, Dict) ->
+                            Dict2 = orddict:update( PI, fun(E)->E end, #aae_stat{}, Dict ),
+                            orddict:update( PI,
+                                            fun(Stat) -> Stat#aae_stat{ direct_count=Count, direct_mode=Mode, direct_time=Time } end,
+                                            Dict2);
+                       (_, Acc) ->
+                            Acc
+                    end,
+                    orddict:new(),
+                    lists:sort(RelevantLogs)),
+    Partitions.
 
 
 validate_partitions(Partitions, NVal, QVal, TotalKeys) ->
