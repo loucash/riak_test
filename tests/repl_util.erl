@@ -51,7 +51,9 @@
          validate_completed_fullsync/6,
          validate_intercepted_fullsync/5,
          get_aae_fullsync_activity/0,
-         validate_aae_fullsync/6
+         validate_aae_fullsync/6,
+         update_props/5,
+         get_current_bucket_props/2
         ]).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -549,7 +551,7 @@ write_to_cluster(Node, Start, End, Bucket) ->
 
 %% @doc Write a series of keys and ensure they are all written.
 write_to_cluster(Node, Start, End, Bucket, Quorum) ->
-    lager:info("Writing ~p keys to node ~p.", [End - Start + 1, Node]),
+    lager:info("Writing ~p keys to node ~p in bucket ~p.", [End - Start + 1, Node, Bucket]),
     ?assertEqual([],
                  repl_util:do_write(Node, Start, End, Bucket, Quorum)).
 
@@ -807,7 +809,7 @@ validate_partitions(Partitions, NVal, QVal, TotalKeys) ->
                                      lager:info("exchange time ~psec", [(ExchangeUSec) / 1000000]),
                                  ((BufferedUSec == undefined) or (DirectCount == 0)) orelse
                                      lager:info("buffered time ~pusec/diff", [(BufferedUSec) / DirectCount]);
-                             direct ->
+                             inline ->
                                  ((ExchangeUSec == undefined) or (BufferedUSec == undefined)) orelse
                                      lager:info("exchange time ~psec", [(ExchangeUSec+BufferedUSec) / 1000000])
                          end,
@@ -909,3 +911,24 @@ aae_fullsync_patterns() ->
         end }
 
       ].
+
+
+update_props(DefaultProps, NewProps, Node, Nodes, Bucket) ->
+    lager:info("Setting bucket properties ~p for bucket ~p on node ~p",
+               [NewProps, Bucket, Node]),
+    rpc:call(Node, riak_core_bucket, set_bucket, [Bucket, NewProps]),
+    rt:wait_until_ring_converged(Nodes),
+
+    UpdatedProps = get_current_bucket_props(Nodes, Bucket),
+    ?assertNotEqual(DefaultProps, UpdatedProps).
+
+%% fetch bucket properties via rpc
+%% from a node or a list of nodes (one node is chosen at random)
+get_current_bucket_props(Nodes, Bucket) when is_list(Nodes) ->
+    Node = lists:nth(length(Nodes), Nodes),
+    get_current_bucket_props(Node, Bucket);
+get_current_bucket_props(Node, Bucket) when is_atom(Node) ->
+    rpc:call(Node,
+             riak_core_bucket,
+             get_bucket,
+             [Bucket]).
