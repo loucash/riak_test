@@ -79,11 +79,15 @@ aae_fs_test_diff_n_buckets() ->
                         {TestBucket, N, NumKeys, Div}
                 end,Tests),
     
-    rt:wait_until_aae_trees_built(ANodes ++ BNodes),
-    repl_util:start_and_wait_until_fullsync_complete(LeaderA),
-
     NumTotalKeys = lists:sum([NumKeys || {_N, NumKeys, _Div} <- Tests]),
     MeanN = lists:sum([N * NumKeys || {N, NumKeys, _Div} <- Tests]) / NumTotalKeys,
+
+    %% Write keys and perform fullsync.
+    FullStartTime = erlang:now(),
+    rt:wait_until_aae_trees_built(ANodes ++ BNodes),
+    repl_util:start_and_wait_until_fullsync_complete(LeaderA),
+    FullEndTime = erlang:now(),
+    repl_util:validate_aae_fullsync(FullStartTime, FullEndTime, MeanN, ?Q_VALUE, NumTotalKeys, NumTotalKeys),
 
     lager:info("TotalKey ~p MeanN ~p", [NumTotalKeys, MeanN]),
 
@@ -93,9 +97,8 @@ aae_fs_test_diff_n_buckets() ->
                           ChangedKeys = NumKeys div Div,
                           repl_util:write_to_cluster(AFirst, 1, ChangedKeys, TestBucket),
                           rt:wait_until_aae_trees_built(ANodes ++ BNodes),
-                          {_FullTime, _} = timer:tc(repl_util,
-                                                   start_and_wait_until_fullsync_complete,
-                                                   [LeaderA]),
+                          repl_util:start_and_wait_until_fullsync_complete(LeaderA),
+
                           EndTime = erlang:now(),
-                          repl_util:validate_aae_fullsync(StartTime, EndTime, MeanN, ?Q_VALUE, NumTotalKeys, ChangedKeys, false)
+                          repl_util:validate_aae_fullsync(StartTime, EndTime, MeanN, ?Q_VALUE, NumTotalKeys, ChangedKeys)
                   end, TestsAndBuckets).

@@ -51,7 +51,7 @@
          validate_completed_fullsync/6,
          validate_intercepted_fullsync/5,
          get_aae_fullsync_activity/0,
-         validate_aae_fullsync/7,
+         validate_aae_fullsync/6,
          update_props/5,
          get_current_bucket_props/2
         ]).
@@ -675,7 +675,7 @@ select_logs_in_time_interval(From,To,Logs) ->
                                Logs),
     RelevantLogs.
 
-validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged, ValidatePartitions) ->
+validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged) ->
     
     Partitions = get_partitions(From),
 
@@ -683,7 +683,7 @@ validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged, ValidatePar
     TotalEstimate = orddict:fold(fun(_, #aae_stat{ key_estimate=N }, Acc) -> N+Acc end, 0, Partitions),
     BloomCount    = orddict:size( orddict:filter( fun(_, #aae_stat{ use_bloom=UseBloom }) -> UseBloom end, Partitions )),
 
-    lager:info("AAE expected fullsync stats: partitions:~p, total_estimate:~p, diffs:~p", [QVal, TotalKeys * NVal, KeysChanged]),
+    lager:info("AAE expected fullsync stats: partitions:~p, total_estimate:~p, diffs:~p", [QVal, trunc(TotalKeys * NVal), KeysChanged]),
     lager:info("AAE found    fullsync stats: partitions:~p, total_estimate:~p, diffs:~p", [length(Partitions), TotalEstimate, Diffs]),
     lager:info("AAE ~p partitions used bloom filter / fold", [BloomCount]),
 
@@ -724,12 +724,7 @@ validate_aae_fullsync(From, _To, NVal, QVal, TotalKeys, KeysChanged, ValidatePar
             end
     end,
 
-    case ValidatePartitions of
-        true ->
-            validate_partitions(Partitions, NVal, QVal, TotalKeys);
-        _ ->
-            ok
-    end,
+    validate_partitions(Partitions, NVal, QVal, TotalKeys),
     ok.
 
 get_partitions(From) ->
@@ -778,7 +773,7 @@ get_partitions(From) ->
 
 validate_partitions(Partitions, NVal, QVal, TotalKeys) ->
 
-    ExpectedKeys = (TotalKeys * NVal div QVal),
+    ExpectedKeys = (trunc(TotalKeys * NVal) div QVal),
 
     orddict:fold(fun(PI, #aae_stat{
                        key_estimate=KeyEst,

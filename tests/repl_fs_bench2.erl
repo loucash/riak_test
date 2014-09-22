@@ -118,7 +118,7 @@ bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
                              start_and_wait_until_fullsync_complete,
                              [LeaderA]),
     End100 = erlang:now(),
-    repl_util:validate_aae_fullsync(Start100, End100, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 1, true),
+    repl_util:validate_aae_fullsync(Start100, End100, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 1),
 
     %% Rewrite first 10% keys and perform fullsync.
     Start10 = erlang:now(),
@@ -128,7 +128,7 @@ bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
                               start_and_wait_until_fullsync_complete,
                               [LeaderA]),
     End10 = erlang:now(),
-    repl_util:validate_aae_fullsync(Start10, End10, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 10, true),
+    repl_util:validate_aae_fullsync(Start10, End10, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 10),
 
     %% Rewrite first 1% keys and perform fullsync.
     Start1 = erlang:now(),
@@ -138,7 +138,7 @@ bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
                               start_and_wait_until_fullsync_complete,
                               [LeaderA]),
     End1 = erlang:now(),
-    repl_util:validate_aae_fullsync(Start1, End1, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 100, true),
+    repl_util:validate_aae_fullsync(Start1, End1, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 100),
 
     %% Rewrite first 0.1% keys and perform fullsync.
     Start01 = erlang:now(),
@@ -148,7 +148,7 @@ bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
                               start_and_wait_until_fullsync_complete,
                               [LeaderA]),
     End01 = erlang:now(),
-    repl_util:validate_aae_fullsync(Start01, End01, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 1000, true),
+    repl_util:validate_aae_fullsync(Start01, End01, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, ?NUM_KEYS div 1000),
 
 
     %% Write no keys, and perform the fullsync.
@@ -158,7 +158,7 @@ bench({Strategy, Pipeline, DirectMode, DirectLimit, DiffPercent}, Delay) ->
                              start_and_wait_until_fullsync_complete,
                              [LeaderA]),
     End0 = erlang:now(),
-    repl_util:validate_aae_fullsync(Start0, End0, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, 0, true),
+    repl_util:validate_aae_fullsync(Start0, End0, ?N_VALUE, ?Q_VALUE, ?NUM_KEYS, 0),
 
     rt:clean_cluster(ANodes),
     rt:clean_cluster(BNodes),
