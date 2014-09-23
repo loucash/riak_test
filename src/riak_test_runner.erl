@@ -21,33 +21,59 @@
 %% @doc riak_test_runner runs a riak_test module's run/0 function.
 -module(riak_test_runner).
 
+-behavior(gen_fsm).
+
+%% API
+-export([start_link/0,
+         stop/0]).
+
 %% Need to export to use with `spawn_link'.
 -export([return_to_exit/3]).
 -export([run/4, metadata/0, metadata/1, function_name/2]).
+
+%% gen_fsm callbacks
+-export([init/1,
+         %% wait_for_input/2,
+         %% wait_for_input/3,
+         %% request_nodes/2,
+         %% request_nodes/3,
+         %% run_test/2,
+         %% run_test/3,
+         %% wait_for_completion/2
+         %% wait_for_completion/3,
+         handle_event/3,
+         handle_sync_event/4,
+         handle_info/3,
+         terminate/3,
+         code_change/4]).
+
 -include("rt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--spec(metadata() -> [{atom(), term()}]).
+%% -spec(metadata() -> [{atom(), term()}]).
 %% @doc fetches test metadata from spawned test process
-metadata() ->
-    riak_test ! metadata,
-    receive
-        {metadata, TestMeta} -> TestMeta
-    end.
+%% metadata() ->
+%%     riak_test ! metadata,
+%%     receive
+%%         {metadata, TestMeta} -> TestMeta
+%%     end.
 
-metadata(Pid) ->
-    riak_test ! {metadata, Pid},
-    receive
-        {metadata, TestMeta} -> TestMeta
-    end.
+%% metadata(Pid) ->
+%%     riak_test ! {metadata, Pid},
+%%     receive
+%%         {metadata, TestMeta} -> TestMeta
+%%     end.
 
--spec(run(integer(), atom(), [{atom(), term()}], list()) -> [tuple()]).
+-spec run(integer(), atom(), [{atom(), term()}], list()) -> [tuple()].
 %% @doc Runs a module's run/0 function after setting up a log
 %%      capturing backend for lager.  It then cleans up that backend
 %%      and returns the logs as part of the return proplist.
 run(TestModule, Outdir, TestMetaData, HarnessArgs) ->
-    start_lager_backend(TestModule, Outdir),
-    rt:setup_harness(TestModule, HarnessArgs),
+    %% TODO: Need to make a lager backend that can separate out log
+    %% messages to different files. Not sure what the effect of this
+    %% will be in concurrent test execution scenarios.
+    %% TODO: Check HarnessArgs for `UseRTLagerBackend' property
+    add_lager_backend(TestModule, Outdir, false),
     BackendExtras = case proplists:get_value(multi_config, TestMetaData) of
                         undefined -> [];
                         Value -> [{multi_config, Value}]
@@ -57,22 +83,23 @@ run(TestModule, Outdir, TestMetaData, HarnessArgs) ->
     {PropsMod, PropsFun} = function_name(properties, TestModule, 0, rt_cluster),
     {SetupMod, SetupFun} = function_name(setup, TestModule, 2, rt_cluster),
     {ConfirmMod, ConfirmFun} = function_name(confirm, TestModule),
-    {Status, Reason} = case check_prereqs(ConfirmMod) of
-        true ->
-            lager:notice("Running Test ~s", [TestModule]),
-            execute(TestModule,
-                    {PropsMod, PropsFun},
-                    {SetupMod, SetupFun},
-                    {ConfirmMod, ConfirmFun},
-                    TestMetaData);
-        not_present ->
-            {fail, test_does_not_exist};
-        _ ->
-            {fail, all_prereqs_not_present}
-    end,
+    {Status, Reason} =
+        case check_prereqs(ConfirmMod) of
+            true ->
+                lager:notice("Running Test ~s", [TestModule]),
+                execute(TestModule,
+                        {PropsMod, PropsFun},
+                        {SetupMod, SetupFun},
+                        {ConfirmMod, ConfirmFun},
+                        TestMetaData);
+            not_present ->
+                {fail, test_does_not_exist};
+            _ ->
+                {fail, all_prereqs_not_present}
+        end,
 
     lager:notice("~s Test Run Complete", [TestModule]),
-    {ok, Logs} = stop_lager_backend(),
+    {ok, Logs} = remove_lager_backend(),
     Log = unicode:characters_to_binary(Logs),
 
     RetList = [{test, TestModule}, {status, Status}, {log, Log}, {backend, Backend} | proplists:delete(backend, TestMetaData)],
@@ -81,7 +108,11 @@ run(TestModule, Outdir, TestMetaData, HarnessArgs) ->
         _ -> RetList
     end.
 
-start_lager_backend(TestModule, Outdir) ->
+add_lager_backend(TestModule, Outdir, true) ->
+    add_lager_backend(TestModule, Outdir, false),
+    gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
+    lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
+add_lager_backend(TestModule, Outdir, false) ->
     case Outdir of
         undefined -> ok;
         _ ->
@@ -89,11 +120,9 @@ start_lager_backend(TestModule, Outdir) ->
                 {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
                  rt_config:get(lager_level, info), 10485760, "$D0", 1}),
             lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
-    end,
-    gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
-    lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info)).
+    end.
 
-stop_lager_backend() ->
+remove_lager_backend() ->
     gen_event:delete_handler(lager_event, lager_file_backend, []),
     gen_event:delete_handler(lager_event, riak_test_lager_backend, []).
 

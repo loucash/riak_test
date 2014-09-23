@@ -24,7 +24,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -define(DEVS(N), lists:concat(["dev", N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
--define(PATH, (rt_config:get(rtdev_path))).
+-define(PATH, (rt_config:get(root_path))).
 
 -export([admin/2,
          attach/2,
@@ -39,6 +39,7 @@
          riak/2,
          set_conf/2,
          set_advanced_conf/2,
+         setup_harness/2,
          get_advanced_riak_conf/1,
          update_app_config_file/2,
          spawn_cmd/1,
@@ -441,4 +442,12 @@ update_app_config_file(ConfigFile, Config) ->
                       end, MergeA, MergeB),
     NewConfigOut = io_lib:format("~p.", [NewConfig]),
     ?assertEqual(ok, file:write_file(ConfigFile, NewConfigOut)),
+    ok.
+
+setup_harness(VersionMap, Nodes) ->
+    rt_config:set(rt_nodes, Nodes),
+    rt_config:set(rt_nodes_available, Nodes),
+    rt_config:set(rt_version_map, VersionMap),
+    %% rt_config:set(rt_versions, VersionMap),
+    [create_dirs(VersionNodes) || {_, VersionNodes} <- VersionMap],
     ok.

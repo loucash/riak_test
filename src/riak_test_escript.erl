@@ -38,14 +38,8 @@ prepare(Args) ->
     ParseResults.
 
 execute(Tests, Outdir, Report, HarnessArgs) ->
-    TestCount = length(Tests),
-    TestResults = [run_test(Test,
-                            Outdir,
-                            TestMetaData,
-                            Report,
-                            HarnessArgs,
-                            TestCount) ||
-                      {Test, TestMetaData} <- Tests],
+    %% Begin test execution
+    TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
     lists:filter(fun results_filter/1, TestResults).
 
 finalize(TestResults, Args) ->
@@ -87,6 +81,9 @@ add_deps(Path) ->
     ok.
 
 test_setup(ParsedArgs) ->
+    %% Prepare the test harness
+    rt_harness:setup(),
+
     %% File output
     OutDir = proplists:get_value(outdir, ParsedArgs),
     ensure_dir(OutDir),
@@ -130,6 +127,7 @@ help_or_parse_tests(ParsedArgs, HarnessArgs, false) ->
     %% test metadata
     load_initial_config(ParsedArgs),
 
+    %% TODO: Need to fix this. Get properties, clean up semantics of `upgrade_version' , etc.
     TestData = compose_test_data(ParsedArgs),
     Tests = which_tests_to_run(report(ParsedArgs), TestData),
     Offset = rt_config:get(offset, undefined),
@@ -336,6 +334,24 @@ is_runnable_test({TestModule, _}) ->
     code:ensure_loaded(Mod),
     erlang:function_exported(Mod, Fun, 0) orelse
         erlang:function_exported(Mod, Fun, 2).
+
+run_tests(Tests, Outdir, Report, HarnessArgs) ->
+    %% Need properties for tests prior to getting here Need server to
+    %% manage the aquisition of nodes and to handle comparison of test
+    %% `node_count' property with resources available. Also handle
+    %% notification of test completion. Hmm, maybe test execution
+    %% should be handled by a `gen_fsm' at this point to distinguish
+    %% the case when there are tests left to be tried with available
+    %% resources versus all have been tried or resources are
+    %% exhausted.
+
+%% [run_test(Test,
+%%                             Outdir,
+%%                             TestMetaData,
+%%                             Report,
+%%                             HarnessArgs,
+%%                             TestCount) ||
+%%                       {Test, TestMetaData} <- Tests],
 
 run_test(Test, Outdir, TestMetaData, Report, HarnessArgs, NumTests) ->
     rt_cover:maybe_start(Test),

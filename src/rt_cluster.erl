@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2014 Basho Technologies, Inc.
+ 3%% Copyright (c) 2014 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -107,19 +107,17 @@ deploy_nodes2(_NodeData) ->
     lager:info("Riak path: ~p", [Path]),
     %% TODO: NumNodes, NodesN, and Nodes should come from the
     %% harnesses involved
-    NumNodes = length(NodeConfig),
-    NodesN = lists:seq(1, NumNodes),
-    Nodes = [?DEV(N) || N <- NodesN],
-    NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
-    {Versions, Configs} = lists:unzip(NodeConfig),
-    VersionMap = lists:zip(NodesN, Versions),
+    %% rt_harness:nodes(length(NodeConfig)),
+    %% NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
+    %% {Versions, Configs} = lists:unzip(NodeConfig),
+    %% VersionMap = lists:zip(NodesN, Versions),
 
-    %% Check that you have the right versions available
-    [check_node(Version) || Version <- VersionMap],
-    rt_config:set(rt_nodes, NodeMap),
-    rt_config:set(rt_versions, VersionMap),
+    %% %% Check that you have the right versions available
+    %% [check_node(Version) || Version <- VersionMap],
+    %% rt_config:set(rt_nodes, NodeMap),
+    %% rt_config:set(rt_versions, VersionMap),
 
-    create_dirs(Nodes),
+    %% create_dirs(Nodes),
     %% Perform harness-specific configuration
     rt_harness:configure_nodes(Nodes, Configs),
 

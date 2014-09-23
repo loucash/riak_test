@@ -28,6 +28,7 @@
          spawn_cmd/2,
          cmd/1,
          cmd/2,
+         setup_harness/0,
          setup_harness/2,
          get_version/0,
          get_backends/0,
@@ -111,7 +112,26 @@ run_riak_repl(N, Path, Cmd) ->
     %% don't mess with intercepts and/or coverage,
     %% they should already be setup at this point
 
-setup_harness(_Test, _Args) ->
+-spec versions() -> [string()].
+versions() ->
+    case file:list_dir(rt_config:get(root_path)) of
+        {ok, RootFiles} ->
+            [Version || Version <- RootFiles, filelib:is_dir(Version)];
+        {error, _} ->
+            []
+    end.
+
+-spec harness_nodes(string()) -> [string()].
+harness_nodes(Version) ->
+    Path = rt_config:get(root_path) ++ Version,
+    case file:list_dir(Path) of
+        {ok, VersionFiles} ->
+            [Node || Node <- VersionFiles, filelib:is_dir(Node)];
+        {error, _} ->
+            []
+    end.
+
+setup_harness() ->
     %% make sure we stop any cover processes on any nodes
     %% otherwise, if the next test boots a legacy node we'll end up with cover
     %% incompatabilities and crash the cover server
@@ -135,7 +155,11 @@ setup_harness(_Test, _Args) ->
                     PipeDir = filename:join(["/tmp//" ++ Dir, "dev"]),
                     {0, _} = cmd("rm -rf " ++ PipeDir)
             end, devpaths()),
-    ok.
+
+    %% Get node names and populate node map
+    VersionMap = [{Version, harness_nodes(Version)} || Version <- versions()],
+    Nodes = harness_nodes(rt_config:get(default_version, "head")),
+    rt_harness_util:setup_harness(VersionMap, Nodes).
 
 relpath(Vsn) ->
     Path = ?PATH,
@@ -405,6 +429,7 @@ deploy_nodes(NodeConfig) ->
     Path = relpath(root),
     lager:info("Riak path: ~p", [Path]),
     NumNodes = length(NodeConfig),
+    %% TODO: The starting index should not be fixed to 1
     NodesN = lists:seq(1, NumNodes),
     Nodes = [?DEV(N) || N <- NodesN],
     NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),

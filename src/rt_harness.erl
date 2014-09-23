@@ -35,7 +35,7 @@
         spawn_cmd/2,
         cmd/1,
         cmd/2,
-        setup_harness/2,
+        setup/0,
         get_deps/0,
         get_version/0,
         get_backends/0,
@@ -52,17 +52,18 @@
         update_app_config/2,
         teardown/0,
         set_conf/2,
-        set_advanced_conf/2]).
+        set_advanced_conf/2,
+        node_count/0]).
 
 start(Node) ->
     ?HARNESS_MODULE:start(Node).
 
 stop(Node) ->
     ?HARNESS_MODULE:stop(Node).
-       
+
 deploy_clusters(ClusterConfigs) ->
     ?HARNESS_MODULE:deploy_clusters(ClusterConfigs).
-   
+
 clean_data_dir(Nodes, SubDir) ->
     ?HARNESS_MODULE:clean_data_dir(Nodes, SubDir).
 
@@ -81,11 +82,12 @@ cmd(Cmd, Opts) ->
 deploy_nodes(NodeConfig) ->
     ?HARNESS_MODULE:deploy_nodes(NodeConfig).
 
-setup_harness(Test, Args) ->
-    ?HARNESS_MODULE:setup_harness(Test, Args).
+setup() ->
+    ?HARNESS_MODULE:setup_harness().
 
 get_deps() ->
     ?HARNESS_MODULE:get_deps().
+
 get_version() ->
     ?HARNESS_MODULE:get_version().
 
