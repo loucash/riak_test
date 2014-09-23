@@ -708,8 +708,8 @@ validate_aae_fullsync(FromTimestamp, _ToTimstamp, NVal, QVal, TotalKeys, KeysCha
         true ->
             lager:info("OK - Estimate is ~p% off", [ EstSkewPercentage*100 ]);
         false ->
-            lager:error("BAD - Estimate is ~p% off", [ EstSkewPercentage*100 ])
-            %% TODO: Make sure this test FAILS!
+            lager:error("BAD - Estimate is ~p% off", [ EstSkewPercentage*100 ]),
+            ?assert(false)
     end,
 
 
@@ -720,8 +720,8 @@ validate_aae_fullsync(FromTimestamp, _ToTimstamp, NVal, QVal, TotalKeys, KeysCha
                 0 ->
                     lager:info("OK - diff count is 0");
                 _ ->
-                    lager:info("BAD - diff count is ~p; should be 0", [FoundDiffs])
-                    %% TODO: Make sure this test FAILS!
+                    lager:info("BAD - diff count is ~p; should be 0", [FoundDiffs]),
+                    ?assert(false)
             end;
         _ ->
             DiffSkewPercentage = DiffSkew / KeysChanged,
@@ -729,8 +729,8 @@ validate_aae_fullsync(FromTimestamp, _ToTimstamp, NVal, QVal, TotalKeys, KeysCha
                 true ->
                     lager:info("OK - Diff count is ~p% off", [ DiffSkewPercentage*100 ]);
                 false ->
-                    lager:error("BAD - Diff count is ~p% off", [ DiffSkewPercentage*100 ])
-                    %% TODO: Make sure this test FAILS!
+                    lager:error("BAD - Diff count is ~p% off", [ DiffSkewPercentage*100 ]),
+                    ?assert(false)
             end
     end,
 
