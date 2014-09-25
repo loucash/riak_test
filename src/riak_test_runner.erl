@@ -24,23 +24,19 @@
 -behavior(gen_fsm).
 
 %% API
--export([start_link/0,
+-export([start_link/3,
          stop/0]).
 
 %% Need to export to use with `spawn_link'.
 -export([return_to_exit/3]).
--export([run/4, metadata/0, metadata/1, function_name/2]).
+-export([run/4, function_name/2]).
 
 %% gen_fsm callbacks
 -export([init/1,
-         %% wait_for_input/2,
-         %% wait_for_input/3,
-         %% request_nodes/2,
-         %% request_nodes/3,
-         %% run_test/2,
-         %% run_test/3,
-         %% wait_for_completion/2
-         %% wait_for_completion/3,
+         setup/2,
+         setup/3,
+         execution/2,
+         execution/3,
          handle_event/3,
          handle_sync_event/4,
          handle_info/3,
@@ -50,19 +46,75 @@
 -include("rt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-%% -spec(metadata() -> [{atom(), term()}]).
-%% @doc fetches test metadata from spawned test process
-%% metadata() ->
-%%     riak_test ! metadata,
-%%     receive
-%%         {metadata, TestMeta} -> TestMeta
-%%     end.
+-record(state, {test_module :: atom(),
+                properties :: proplists:proplist(),
+                metadata :: term()}).
 
-%% metadata(Pid) ->
-%%     riak_test ! {metadata, Pid},
-%%     receive
-%%         {metadata, TestMeta} -> TestMeta
-%%     end.
+%%%===================================================================
+%%% API
+%%%===================================================================
+
+%% @doc Start the test executor
+start_link(TestModule, Properties, MetaData) ->
+    Args = [TestModule, Properties, MetaData],
+    gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
+
+%% @doc Stop the executor
+-spec stop() -> ok | {error, term()}.
+stop() ->
+    gen_fsm:sync_send_all_state_event(?MODULE, stop, infinity).
+
+%%%===================================================================
+%%% gen_fsm callbacks
+%%%===================================================================
+
+%% @doc Read the storage schedule and go to idle.
+
+init([TestModule, Properties, Metadata]) ->
+    {ok, setup, #state{test_module=TestModule,
+                       properties=Properties,
+                       metadata=Metadata}}.
+
+%% @doc there are no all-state events for this fsm
+handle_event(_Event, StateName, State) ->
+    {next_state, StateName, State}.
+
+%% @doc Handle synchronous events that should be handled
+%% the same regardless of the current state.
+-spec handle_sync_event(term(), term(), atom(), #state{}) ->
+                               {reply, term(), atom(), #state{}}.
+handle_sync_event(_Event, _From, _StateName, _State) ->
+    {reply, ok, ok, _State}.
+
+handle_info(_Info, StateName, State) ->
+    {next_state, StateName, State}.
+
+terminate(_Reason, _StateName, _State) ->
+    ok.
+
+%% @doc this fsm has no special upgrade process
+code_change(_OldVsn, StateName, State, _Extra) ->
+    {ok, StateName, State}.
+
+%% Asynchronous call handling functions for each FSM state
+
+setup(_Event, _State) ->
+    ok.
+
+execution(_Event, _State) ->
+    ok.
+
+%% Synchronous call handling functions for each FSM state
+
+setup(_Event, _From, _State) ->
+    ok.
+
+execution(_Event, _From, _State) ->
+    ok.
+
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
 
 -spec run(integer(), atom(), [{atom(), term()}], list()) -> [tuple()].
 %% @doc Runs a module's run/0 function after setting up a log
@@ -108,23 +160,6 @@ run(TestModule, Outdir, TestMetaData, HarnessArgs) ->
         _ -> RetList
     end.
 
-add_lager_backend(TestModule, Outdir, true) ->
-    add_lager_backend(TestModule, Outdir, false),
-    gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
-    lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
-add_lager_backend(TestModule, Outdir, false) ->
-    case Outdir of
-        undefined -> ok;
-        _ ->
-            gen_event:add_handler(lager_event, lager_file_backend,
-                {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
-                 rt_config:get(lager_level, info), 10485760, "$D0", 1}),
-            lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
-    end.
-
-remove_lager_backend() ->
-    gen_event:delete_handler(lager_event, lager_file_backend, []),
-    gen_event:delete_handler(lager_event, riak_test_lager_backend, []).
 
 %% does some group_leader swapping, in the style of EUnit.
 execute(TestModule, PropsModFun, SetupModFun, ConfirmModFun, TestMetaData) ->
@@ -224,6 +259,24 @@ function_name(FunName, TestModule, Arity, Default) when is_atom(TestModule) ->
             {Default, FunName}
     end.
 
+add_lager_backend(TestModule, Outdir, true) ->
+    add_lager_backend(TestModule, Outdir, false),
+    gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
+    lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
+add_lager_backend(TestModule, Outdir, false) ->
+    case Outdir of
+        undefined -> ok;
+        _ ->
+            gen_event:add_handler(lager_event, lager_file_backend,
+                {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
+                 rt_config:get(lager_level, info), 10485760, "$D0", 1}),
+            lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
+    end.
+
+remove_lager_backend() ->
+    gen_event:delete_handler(lager_event, lager_file_backend, []),
+    gen_event:delete_handler(lager_event, riak_test_lager_backend, []).
+
 rec_loop(Pid, TestModule, TestMetaData) ->
     receive
         test_took_too_long ->
@@ -267,3 +320,18 @@ check_prereqs(Module) ->
         _DontCare:_Really ->
             not_present
     end.
+
+
+%% -spec(metadata() -> [{atom(), term()}]).
+%% @doc fetches test metadata from spawned test process
+%% metadata() ->
+%%     riak_test ! metadata,
+%%     receive
+%%         {metadata, TestMeta} -> TestMeta
+%%     end.
+
+%% metadata(Pid) ->
+%%     riak_test ! {metadata, Pid},
+%%     receive
+%%         {metadata, TestMeta} -> TestMeta
+%%     end.

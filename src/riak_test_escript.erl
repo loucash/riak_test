@@ -26,8 +26,7 @@
 
 main(Args) ->
     {ParsedArgs, HarnessArgs, Tests} = prepare(Args),
-    OutDir = proplists:get_value(outdir, ParsedArgs),
-    Results = execute(Tests, OutDir, report(ParsedArgs), HarnessArgs),
+    Results = execute(Tests, ParsedArgs, HarnessArgs),
     finalize(Results, ParsedArgs).
 
 prepare(Args) ->
@@ -37,8 +36,19 @@ prepare(Args) ->
     ok = test_setup(ParsedArgs),
     ParseResults.
 
-execute(Tests, Outdir, Report, HarnessArgs) ->
-    %% Begin test execution
+execute(Tests, ParsedArgs, HarnessArgs) ->
+    OutDir = proplists:get_value(outdir, ParsedArgs),
+    Report = report(ParsedArgs),
+    Backends = case proplists:get_all_values(backend, ParsedArgs) of
+        [] -> [undefined];
+        Other -> Other
+    end,
+    Upgrades = case proplists:get_all_values(upgrade_version, ParsedArgs) of
+                   [] -> [undefined];
+                   UpgradeList -> UpgradeList
+               end,
+
+    {ok, Executor} = riak_test_executor:start_link(Tests, OutDir, Report,
     TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
     lists:filter(fun results_filter/1, TestResults).
 
