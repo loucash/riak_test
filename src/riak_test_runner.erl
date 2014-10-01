@@ -24,7 +24,7 @@
 -behavior(gen_fsm).
 
 %% API
--export([start_link/3,
+-export([start/2,
          stop/0]).
 
 %% Need to export to use with `spawn_link'.
@@ -55,8 +55,8 @@
 %%%===================================================================
 
 %% @doc Start the test executor
-start_link(TestModule, Properties, MetaData) ->
-    Args = [TestModule, Properties, MetaData],
+start(TestModule, Properties) ->
+    Args = [TestModule, Properties],
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
 
 %% @doc Stop the executor
@@ -69,6 +69,14 @@ stop() ->
 %%%===================================================================
 
 %% @doc Read the storage schedule and go to idle.
+
+%% Project = list_to_binary(rt_config:get(rt_project, "undefined")),
+%% Version = rt:get_version(),
+%% compose_test_datum(Version, Project, undefined, undefined) ->
+%%     [{id, -1},
+%%      {platform, <<"local">>},
+%%      {version, Version},
+%%      {project, Project}];
 
 init([TestModule, Properties, Metadata]) ->
     {ok, setup, #state{test_module=TestModule,

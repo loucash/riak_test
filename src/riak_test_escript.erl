@@ -36,21 +36,26 @@ prepare(Args) ->
     ok = test_setup(ParsedArgs),
     ParseResults.
 
-execute(Tests, ParsedArgs, HarnessArgs) ->
+execute(Tests, ParsedArgs, _HarnessArgs) ->
     OutDir = proplists:get_value(outdir, ParsedArgs),
     Report = report(ParsedArgs),
-    Backends = case proplists:get_all_values(backend, ParsedArgs) of
-        [] -> [undefined];
-        Other -> Other
-    end,
-    Upgrades = case proplists:get_all_values(upgrade_version, ParsedArgs) of
-                   [] -> [undefined];
-                   UpgradeList -> UpgradeList
-               end,
+    UpgradePath = proplists:get_value(upgrade_path, ParsedArgs),
 
-    {ok, Executor} = riak_test_executor:start_link(Tests, OutDir, Report,
-    TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
-    lists:filter(fun results_filter/1, TestResults).
+    {ok, Executor} = riak_test_executor:start_link(Tests, OutDir, Report, UpgradePath, self()),
+    wait_for_results(Executor, [], length(Tests), 0).
+    %% TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
+    %% lists:filter(fun results_filter/1, TestResults).
+
+%% TODO: Use `TestCount' and `Completed' to display progress output
+wait_for_results(Executor, TestResults, TestCount, Completed) ->
+    receive
+        {Executor, {test_result, Result}} ->
+            wait_for_results(Executor, [Result | TestResults], TestCount, Completed+1);
+        {Executor, done} ->
+            TestResults;
+        _ ->
+            wait_for_results(Executor, TestResults, TestCount, Completed)
+    end.
 
 finalize(TestResults, Args) ->
     [rt_cover:maybe_import_coverage(proplists:get_value(coverdata, R)) ||
@@ -75,7 +80,7 @@ cli_options() ->
  {verbose,            $v, "verbose",  undefined,  "verbose output"},
  {outdir,             $o, "outdir",   string,     "output directory"},
  {backend,            $b, "backend",  atom,       "backend to test [memory | bitcask | eleveldb]"},
- {upgrade_version,    $u, "upgrade",  atom,       "which version to upgrade from [ previous | legacy ]"},
+ {upgrade_path,    $u, "upgrade-path",  atom,       "comma-separated list representing an upgrade path (e.g. 1.2.1,1.3.4,1.4.10,2.0.0)"},
  {keep,        undefined, "keep",     boolean,    "do not teardown cluster"},
  {report,             $r, "report",   string,     "you're reporting an official test run, provide platform info (e.g. ubuntu-1204-64)\nUse 'config' if you want to pull from ~/.riak_test.config"},
  {file,               $F, "file",     string,     "use the specified file instead of ~/.riak_test.config"}
@@ -91,8 +96,10 @@ add_deps(Path) ->
     ok.
 
 test_setup(ParsedArgs) ->
+    Backend = proplists:get_value(backend, ParsedArgs, bitcask),
+
     %% Prepare the test harness
-    rt_harness:setup(),
+    rt_harness:setup(Backend),
 
     %% File output
     OutDir = proplists:get_value(outdir, ParsedArgs),
@@ -137,7 +144,6 @@ help_or_parse_tests(ParsedArgs, HarnessArgs, false) ->
     %% test metadata
     load_initial_config(ParsedArgs),
 
-    %% TODO: Need to fix this. Get properties, clean up semantics of `upgrade_version' , etc.
     TestData = compose_test_data(ParsedArgs),
     Tests = which_tests_to_run(report(ParsedArgs), TestData),
     Offset = rt_config:get(offset, undefined),
@@ -254,40 +260,34 @@ compose_test_data(ParsedArgs) ->
     Dirs = proplists:get_all_values(dir, ParsedArgs),
     SkipTests = string:tokens(proplists:get_value(skip, ParsedArgs, []), [$,]),
     DirTests = lists:append([load_tests_in_dir(Dir, SkipTests) || Dir <- Dirs]),
-    Project = list_to_binary(rt_config:get(rt_project, "undefined")),
+    %% Project = list_to_binary(rt_config:get(rt_project, "undefined")),
 
-    Backends = case proplists:get_all_values(backend, ParsedArgs) of
-        [] -> [undefined];
-        Other -> Other
-    end,
-    Upgrades = case proplists:get_all_values(upgrade_version, ParsedArgs) of
-                   [] -> [undefined];
-                   UpgradeList -> UpgradeList
-               end,
-    TestFoldFun = test_data_fun(rt:get_version(), Project, Backends, Upgrades),
-    lists:foldl(TestFoldFun, [], lists:usort(DirTests ++ SpecificTests)).
+    %% Upgrades = proplists:get_value(upgrade_path, ParsedArgs),
+    %% TestFoldFun = test_data_fun(rt:get_version(), Project, Upgrades),
+    %% lists:foldl(TestFoldFun, [], lists:usort(DirTests ++ SpecificTests)).
+    lists:usort(DirTests ++ SpecificTests).
 
-test_data_fun(Version, Project, Backends, Upgrades) ->
-    fun(Test, Tests) ->
-            [{list_to_atom(Test),
-              compose_test_datum(Version, Project, Backend, Upgrade)}
-             || Backend <- Backends, Upgrade <- Upgrades ] ++ Tests
-    end.
+%% test_data_fun(Version, Project, Backends, Upgrades) ->
+%%     fun(Test, Tests) ->
+%%             [{list_to_atom(Test),
+%%               compose_test_datum(Version, Project, Backend, Upgrade)}
+%%              || Backend <- Backends, Upgrade <- Upgrades ] ++ Tests
+%%     end.
 
-compose_test_datum(Version, Project, undefined, undefined) ->
-    [{id, -1},
-     {platform, <<"local">>},
-     {version, Version},
-     {project, Project}];
-compose_test_datum(Version, Project, undefined, Upgrade) ->
-    compose_test_datum(Version, Project, undefined, undefined) ++
-        [{upgrade_version, Upgrade}];
-compose_test_datum(Version, Project, Backend, undefined) ->
-    compose_test_datum(Version, Project, undefined, undefined) ++
-        [{backend, Backend}];
-compose_test_datum(Version, Project, Backend, Upgrade) ->
-    compose_test_datum(Version, Project, undefined, undefined) ++
-        [{backend, Backend}, {upgrade_version, Upgrade}].
+%% compose_test_datum(Version, Project, undefined, undefined) ->
+%%     [{id, -1},
+%%      {platform, <<"local">>},
+%%      {version, Version},
+%%      {project, Project}];
+%% compose_test_datum(Version, Project, undefined, Upgrade) ->
+%%     compose_test_datum(Version, Project, undefined, undefined) ++
+%%         [{upgrade_version, Upgrade}];
+%% compose_test_datum(Version, Project, Backend, undefined) ->
+%%     compose_test_datum(Version, Project, undefined, undefined) ++
+%%         [{backend, Backend}];
+%% compose_test_datum(Version, Project, Backend, Upgrade) ->
+%%     compose_test_datum(Version, Project, undefined, undefined) ++
+%%         [{backend, Backend}, {upgrade_version, Upgrade}].
 
 extract_test_names(Test, {CodePaths, TestNames}) ->
     {[filename:dirname(Test) | CodePaths],
@@ -296,7 +296,7 @@ extract_test_names(Test, {CodePaths, TestNames}) ->
 which_tests_to_run(undefined, CommandLineTests) ->
     {Tests, NonTests} =
         lists:partition(fun is_runnable_test/1, CommandLineTests),
-    lager:info("These modules are not runnable tests: ~p",
+    lager:info("These modules arenot runnable tests: ~p",
                [[NTMod || {NTMod, _} <- NonTests]]),
     Tests;
 which_tests_to_run(Platform, []) ->
@@ -473,13 +473,13 @@ backend_list(Backends) when is_list(Backends) ->
               end,
     lists:foldl(FoldFun, [], Backends).
 
-results_filter(Result) ->
-    case proplists:get_value(status, Result) of
-        not_a_runnable_test ->
-            false;
-        _ ->
-            true
-    end.
+%% results_filter(Result) ->
+%%     case proplists:get_value(status, Result) of
+%%         not_a_runnable_test ->
+%%             false;
+%%         _ ->
+%%             true
+%%     end.
 
 load_tests_in_dir(Dir, SkipTests) ->
     case filelib:is_dir(Dir) of
