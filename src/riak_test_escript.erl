@@ -40,18 +40,36 @@ execute(Tests, ParsedArgs, _HarnessArgs) ->
     OutDir = proplists:get_value(outdir, ParsedArgs),
     Report = report(ParsedArgs),
     UpgradePath = proplists:get_value(upgrade_path, ParsedArgs),
+    Backend = proplists:get_value(backend, ParsedArgs),
 
     {ok, Executor} = riak_test_executor:start_link(Tests, OutDir, Report, UpgradePath, self()),
     wait_for_results(Executor, [], length(Tests), 0).
     %% TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
     %% lists:filter(fun results_filter/1, TestResults).
 
+%% run_test(Test, Outdir, TestMetaData, Report, HarnessArgs, NumTests) ->
+%%     rt_cover:maybe_start(Test),
+%%     SingleTestResult = riak_test_runner:run(Test, Outdir, TestMetaData, HarnessArgs),
+
+    %% case NumTests of
+    %%     1 -> keep_them_up;
+    %%     _ -> rt_cluster:teardown()
+    %% end,
+
+%% TODO: Do this in the test runner
+%%     CoverDir = rt_config:get(cover_output, "coverage"),
+%% CoverFile = rt_cover:maybe_export_coverage(Test, CoverDir, erlang:phash2(TestMetaData)),
+%% publish_report(SingleTestResult, CoverFile, Report),
+
+%%     [{coverdata, CoverFile} | SingleTestResult].
+
 %% TODO: Use `TestCount' and `Completed' to display progress output
 wait_for_results(Executor, TestResults, TestCount, Completed) ->
     receive
-        {Executor, {test_result, Result}} ->
+        {Executor, {test_result, Result, TestMetaData}} ->
             wait_for_results(Executor, [Result | TestResults], TestCount, Completed+1);
         {Executor, done} ->
+            rt_cover:stop(),
             TestResults;
         _ ->
             wait_for_results(Executor, TestResults, TestCount, Completed)
@@ -362,19 +380,6 @@ run_tests(Tests, Outdir, Report, HarnessArgs) ->
 %%                             HarnessArgs,
 %%                             TestCount) ||
 %%                       {Test, TestMetaData} <- Tests],
-
-run_test(Test, Outdir, TestMetaData, Report, HarnessArgs, NumTests) ->
-    rt_cover:maybe_start(Test),
-    SingleTestResult = riak_test_runner:run(Test, Outdir, TestMetaData, HarnessArgs),
-    CoverDir = rt_config:get(cover_output, "coverage"),
-    case NumTests of
-        1 -> keep_them_up;
-        _ -> rt_cluster:teardown()
-    end,
-    CoverFile = rt_cover:maybe_export_coverage(Test, CoverDir, erlang:phash2(TestMetaData)),
-    publish_report(SingleTestResult, CoverFile, Report),
-    rt_cover:stop(),
-    [{coverdata, CoverFile} | SingleTestResult].
 
 publish_report(_SingleTestResult, _CoverFile, undefined) ->
     ok;

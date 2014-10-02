@@ -17,8 +17,6 @@
          launch_test/3,
          wait_for_completion/2,
          wait_for_completion/3,
-         report_results/2,
-         report_results/3,
          handle_event/3,
          handle_sync_event/4,
          handle_info/3,
@@ -45,12 +43,6 @@ start_link(Tests, LogDir, ReportInfo, UpgradePath, NotifyPid) ->
     UpgradeList = upgrade_list(UpgradePath),
     Args = [Tests, LogDir, ReportInfo, UpgradeList, NotifyPid],
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
-
--spec upgrade_list(undefined | string()) -> undefined | [string()].
-upgrade_list(undefined) ->
-    undefined;
-upgrade_list(Path) ->
-    string:tokens(Path, ",").
 
 send_event(Msg) ->
     gen_fsm:send_event(?MODULE, Msg).
@@ -86,8 +78,8 @@ handle_sync_event(_Event, _From, _StateName, _State) ->
 handle_info(_Info, StateName, State) ->
     {next_state, StateName, State}.
 
-terminate(_Reason, _StateName, #state{notify_pid=NotifyPid}) ->
-    {self(), done} ! NotifyPid,
+terminate(_Reason, _StateName, State) ->
+    report_done(State),
     ok.
 
 %% @doc this fsm has no special upgrade process
@@ -114,6 +106,18 @@ request_nodes(timeout, State) ->
                                UpgradeList,
                                reservation_notify_fun()),
     {next_state, launch_test, State};
+request_nodes({test_complete, Test, Pid, Results}, State) ->
+    #state{pending_tests=Pending,
+           waiting_tests=Waiting,
+           running_tests=Running,
+           runner_pids=Pids} = State,
+    %% Report results
+    report_results(Test, Results, State),
+    UpdState = State#state{running_tests=lists:delete(Test, Running),
+                           runner_pids=lists:delete(Pid, Pids),
+                           pending_tests=Pending++Waiting,
+                           waiting_tests=[]},
+    {next_state, request_nodes, UpdState};
 request_nodes(_Event, _State) ->
     {next_state, request_nodes, _State}.
 
@@ -134,11 +138,24 @@ launch_test({nodes, Nodes}, State) ->
            runner_pids=Pids,
            running_tests=Running} = State,
     {NextTest, TestProps} = lists:keyfind(NextTest, 1, PropertiesList),
-    Pid = spawn_link(riak_test_runner, start, [NextTest, TestProps]),
+    UpdTestProps = rt_properties:set(nodes, Nodes, TestProps),
+    Pid = spawn_link(riak_test_runner, start, [NextTest, UpdTestProps]),
     UpdState = State#state{pending_tests=RestPending,
                            runner_pids=[Pid | Pids],
                            running_tests=[NextTest | Running]},
     launch_test_transition(UpdState);
+launch_test({test_complete, Test, Pid, Results}, State) ->
+    #state{pending_tests=Pending,
+           waiting_tests=Waiting,
+           running_tests=Running,
+           runner_pids=Pids} = State,
+    %% Report results
+    report_results(Test, Results, State),
+    UpdState = State#state{running_tests=lists:delete(Test, Running),
+                           runner_pids=lists:delete(Pid, Pids),
+                           pending_tests=Pending++Waiting,
+                           waiting_tests=[]},
+    {next_state, launch_test, UpdState};
 launch_test(_Event, _State) ->
     ok.
 
@@ -146,19 +163,15 @@ wait_for_completion({test_complete, Test, Pid, Results}, State) ->
     #state{pending_tests=Pending,
            waiting_tests=Waiting,
            running_tests=Running,
-           runner_pids=Pids,
-           notify_pid=NotifyPid} = State,
+           runner_pids=Pids} = State,
     %% Report results
-    {self(), {test_result, {Test, Results}} ! NotifyPid,
+    report_results(Test, Results, State),
     UpdState = State#state{running_tests=lists:delete(Test, Running),
                            runner_pids=lists:delete(Pid, Pids),
                            pending_tests=Pending++Waiting,
                            waiting_tests=[]},
     wait_for_completion_transition(UpdState);
 wait_for_completion(_Event, _State) ->
-    ok.
-
-report_results(_Event, _State) ->
     ok.
 
 %% Synchronous call handling functions for each FSM state
@@ -175,20 +188,24 @@ launch_test(_Event, _From, _State) ->
 wait_for_completion(_Event, _From, _State) ->
     ok.
 
-report_results(_Event, _From, _State) ->
-    ok.
-
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+report_results(Test, Results, #state{notify_pid=NotifyPid}) ->
+    {self(), {test_result, {Test, Results}}} ! NotifyPid,
+     ok.
+
+report_done(#state{notify_pid=NotifyPid}) ->
+    {self(), done} ! NotifyPid,
+    ok.
 
 wait_for_completion_transition(State=#state{pending_tests=[],
                                             running_tests=[]}) ->
     {stop, normal, State};
 wait_for_completion_transition(State=#state{pending_tests=[]}) ->
     {next_state, wait_for_completion, State};
-wait_for_completion_transition(State=#state{pending_tests=Pending,
-                                            running_tests=Running}) ->
+wait_for_completion_transition(State) ->
     {next_state, request_nodes, State, 0}.
 
 launch_test_transition(State=#state{pending_tests=[]}) ->
@@ -210,3 +227,9 @@ test_property(TestModule, Acc) ->
                                                           0,
                                                           rt_cluster),
     [{TestModule, PropsMod:PropsFun()} | Acc].
+
+-spec upgrade_list(undefined | string()) -> undefined | [string()].
+upgrade_list(undefined) ->
+    undefined;
+upgrade_list(Path) ->
+    string:tokens(Path, ",").
