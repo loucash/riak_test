@@ -445,9 +445,9 @@ update_app_config_file(ConfigFile, Config) ->
     ok.
 
 setup_harness(VersionMap, Nodes) ->
-    rt_config:set(rt_nodes, Nodes),
-    rt_config:set(rt_nodes_available, Nodes),
-    rt_config:set(rt_version_map, VersionMap),
+    %% rt_config:set(rt_nodes, Nodes),
+    %% rt_config:set(rt_nodes_available, Nodes),
+    %% rt_config:set(rt_version_map, VersionMap),
     %% rt_config:set(rt_versions, VersionMap),
     [create_dirs(VersionNodes) || {_, VersionNodes} <- VersionMap],
-    ok.
+    {Nodes, VersionMap}.

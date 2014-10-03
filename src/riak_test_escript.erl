@@ -39,11 +39,22 @@ prepare(Args) ->
 execute(Tests, ParsedArgs, _HarnessArgs) ->
     OutDir = proplists:get_value(outdir, ParsedArgs),
     Report = report(ParsedArgs),
-    UpgradePath = proplists:get_value(upgrade_path, ParsedArgs),
+    UpgradeList = upgrade_list(
+                    proplists:get_value(upgrade_path, ParsedArgs)),
     Backend = proplists:get_value(backend, ParsedArgs),
 
-    {ok, Executor} = riak_test_executor:start_link(Tests, OutDir, Report, UpgradePath, self()),
+    {ok, Executor} = riak_test_executor:start_link(Tests,
+                                                   Backend,
+                                                   OutDir,
+                                                   Report,
+                                                   UpgradeList,
+                                                   self()),
     wait_for_results(Executor, [], length(Tests), 0).
+
+
+report_results(_Results) ->
+    ok.
+
     %% TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
     %% lists:filter(fun results_filter/1, TestResults).
 
@@ -76,6 +87,7 @@ wait_for_results(Executor, TestResults, TestCount, Completed) ->
     end.
 
 finalize(TestResults, Args) ->
+    report_results(TestResults),
     [rt_cover:maybe_import_coverage(proplists:get_value(coverdata, R)) ||
         R <- TestResults],
     CoverDir = rt_config:get(cover_output, "coverage"),
@@ -115,9 +127,15 @@ add_deps(Path) ->
 
 test_setup(ParsedArgs) ->
     Backend = proplists:get_value(backend, ParsedArgs, bitcask),
-
     %% Prepare the test harness
-    rt_harness:setup(Backend),
+    {Nodes, VersionMap} = rt_harness:setup(Backend),
+
+    %% Start the node manager
+    DefaultVersion = rt_config:get(default_version, "head"),
+    UpgradePath = proplists:get_value(upgrade_path, ParsedArgs),
+    %% This will currently block until the nodes are deployed with the
+    %% appropriate initial version
+    _ = node_manager:start_link(Nodes, VersionMap, DefaultVersion, upgrade_list(UpgradePath)),
 
     %% File output
     OutDir = proplists:get_value(outdir, ParsedArgs),
@@ -134,6 +152,12 @@ test_setup(ParsedArgs) ->
                         [ErrorReason])
     end,
     ok.
+
+-spec upgrade_list(undefined | string()) -> undefined | [string()].
+upgrade_list(undefined) ->
+    undefined;
+upgrade_list(Path) ->
+    string:tokens(Path, ",").
 
 report(ParsedArgs) ->
     case proplists:get_value(report, ParsedArgs, undefined) of

@@ -24,12 +24,10 @@
 -behavior(gen_fsm).
 
 %% API
--export([start/2,
+-export([start/3,
          stop/0]).
 
-%% Need to export to use with `spawn_link'.
--export([return_to_exit/3]).
--export([run/4, function_name/2]).
+-export([function_name/2]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -51,11 +49,14 @@
 -record(state, {test_module :: atom(),
                 properties :: proplists:proplist(),
                 metadata :: term(),
+                backend :: atom(),
+                test_timeout :: integer(),
                 execution_pid :: pid(),
                 group_leader :: pid(),
                 start_time :: erlang:timestamp(),
                 setup_modfun :: {atom(), atom()},
                 confirm_modfun :: {atom(), atom()},
+                backend_check :: atom(),
                 prereq_check :: atom()}).
 
 %%%===================================================================
@@ -63,8 +64,8 @@
 %%%===================================================================
 
 %% @doc Start the test executor
-start(TestModule, Properties) ->
-    Args = [TestModule, Properties],
+start(TestModule, Backend, Properties) ->
+    Args = [TestModule, Backend, Properties],
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
 
 %% @doc Stop the executor
@@ -78,16 +79,19 @@ stop() ->
 
 %% @doc Read the storage schedule and go to idle.
 %% compose_test_datum(Version, Project, undefined, undefined) ->
-init([TestModule, Properties]) ->
-    process_flag(trap_exit, true),
+init([TestModule, Backend, Properties]) ->
+    lager:info("DEBUG: Started riak_test_runnner with pid ~p", [self()]),
     Project = list_to_binary(rt_config:get(rt_project, "undefined")),
     MetaData = [{id, -1},
                 {platform, <<"local">>},
                 {version, rt:get_version()},
                 {project, Project}],
+    TestTimeout = rt_config:get(test_timeout, rt_config:get(rt_max_wait_time)),
     State = #state{test_module=TestModule,
                    properties=Properties,
                    metadata=MetaData,
+                   backend=Backend,
+                   test_timeout=TestTimeout,
                    group_leader=group_leader()},
     {ok, setup, State, 0}.
 
@@ -114,7 +118,9 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 %% Asynchronous call handling functions for each FSM state
 
-setup(timeout, State) ->
+setup(timeout, State=#state{test_module=TestModule,
+                            backend=Backend,
+                            properties=Properties}) ->
     NewGroupLeader = riak_test_group_leader:new_group_leader(self()),
     group_leader(NewGroupLeader, self()),
 
@@ -122,16 +128,20 @@ setup(timeout, State) ->
     lager:info("Test Runner `uname -a` : ~s", [UName]),
     SetupModFun = function_name(setup, TestModule, 2, rt_cluster),
     {ConfirmMod, _} = ConfirmModFun = function_name(confirm, TestModule),
+    BackendCheck = check_backend(Backend,
+                                 rt_properties:get(valid_backends, Properties)),
     PreReqCheck = check_prereqs(ConfirmMod),
+
     UpdState = State#state{setup_modfun=SetupModFun,
                            confirm_modfun=ConfirmModFun,
+                           backend_check=BackendCheck,
                            prereq_check=PreReqCheck},
     {next_state, execution, UpdState, 0};
 setup(_Event, _State) ->
     ok.
 
-execution(timeout, State=#state{prereq_check=not_present}) ->
-    notify_executor({fail, test_module_unavailable}, State),
+execution(timeout, State=#state{backend_check=false}) ->
+    notify_executor({skipped, invalid_backend}, State),
     cleanup(State),
     {stop, normal, State};
 execution(timeout, State=#state{prereq_check=false}) ->
@@ -143,7 +153,8 @@ execution(timeout, State) ->
            properties=Properties,
            setup_modfun=SetupModFun,
            confirm_modfun=ConfirmModFun,
-           metadata=MetaData} = State,
+           metadata=MetaData,
+           test_timeout=TestTimeout} = State,
     lager:notice("Running Test ~s", [TestModule]),
 
     StartTime = os:timestamp(),
@@ -153,13 +164,12 @@ execution(timeout, State) ->
                               MetaData)),
     UpdState =  State#state{execution_pid=Pid,
                             start_time=StartTime},
-    {next_state, wait_for_completion, UpdState};
+    {next_state, wait_for_completion, UpdState, TestTimeout};
 execution(_Event, _State) ->
     {next_state, execution, _State}.
 
 wait_for_completion(timeout, State) ->
     %% Test timed out
-    %% TODO Notify executor
     notify_executor(timeout, State),
     cleanup(State),
     {stop, normal, State};
@@ -197,6 +207,66 @@ wait_for_completion(_Event, _From, _State) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec test_fun(term(), {atom(), atom()}, {atom(), atom()}, proplists:proplist()) -> function().
+test_fun(Properties, {SetupMod, SetupFun}, ConfirmModFun, MetaData) ->
+    fun() ->
+            case SetupMod:SetupFun(Properties, MetaData) of
+                {ok, SetupData} ->
+                    RollingUpgradeTest = rt_properties:get(rolling_upgrade, SetupData),
+                    ConfirmFun = compose_confirm_fun(ConfirmModFun,
+                                                     SetupData,
+                                                     MetaData,
+                                                     RollingUpgradeTest),
+
+                    gen_fsm:send_event(self(), ConfirmFun());
+                _ ->
+                    gen_fsm:send_event(self(), {fail, test_setup_failed})
+            end
+    end.
+
+compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, true) ->
+    Nodes = rt_properties:get(nodes, SetupData),
+    WaitForTransfers = rt_properties:get(wait_for_transfers, SetupData),
+    UpgradeVersion = rt_properties:get(upgrade_version, SetupData),
+    fun() ->
+            InitialResult = ConfirmMod:ConfirmFun(SetupData, MetaData),
+            OtherResults = [begin
+                                ensure_all_nodes_running(Nodes),
+                                _ = rt_node:upgrade(Node, UpgradeVersion),
+                                _ = rt_cluster:maybe_wait_for_transfers(Nodes, WaitForTransfers),
+                                ConfirmMod:ConfirmFun(SetupData, MetaData)
+                            end || Node <- Nodes],
+            lists:all(fun(R) -> R =:= pass end, [InitialResult | OtherResults])
+    end;
+compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, false) ->
+    fun() ->
+            ConfirmMod:ConfirmFun(SetupData, MetaData)
+    end.
+
+ensure_all_nodes_running(Nodes) ->
+    [begin
+         ok = rt_node:start_and_wait(Node),
+         ok = rt:wait_until_registered(Node, riak_core_ring_manager)
+     end || Node <- Nodes].
+
+function_name(confirm, TestModule) ->
+    TMString = atom_to_list(TestModule),
+    Tokz = string:tokens(TMString, ":"),
+    case length(Tokz) of
+        1 -> {TestModule, confirm};
+        2 ->
+            [Module, Function] = Tokz,
+            {list_to_atom(Module), list_to_atom(Function)}
+    end.
+
+function_name(FunName, TestModule, Arity, Default) when is_atom(TestModule) ->
+    case erlang:function_exported(TestModule, FunName, Arity) of
+        true ->
+            {TestModule, FunName};
+        false ->
+            {Default, FunName}
+    end.
 
 %% -spec run(integer(), atom(), [{atom(), term()}], list()) -> [tuple()].
 %% %% @doc Runs a module's run/0 function after setting up a log
@@ -269,112 +339,55 @@ wait_for_completion(_Event, _From, _State) ->
     %% end,
     %% {Status, Reason}.
 
--spec test_fun(term(), {atom(), atom()}, {atom(), atom()}, proplists:proplist()) -> function().
-test_fun(Properties, {SetupMod, SetupFun}, ConfirmModFun, MetaData) ->
-    fun() ->
-            case SetupMod:SetupFun(Properties, MetaData) of
-                {ok, SetupData} ->
-                    RollingUpgradeTest = rt_properties:get(rolling_upgrade, SetupData),
-                    ConfirmFun = compose_confirm_fun(ConfirmModFun,
-                                                     SetupData,
-                                                     MetaData,
-                                                     RollingUpgradeTest),
+%% add_lager_backend(TestModule, Outdir, true) ->
+%%     add_lager_backend(TestModule, Outdir, false),
+%%     gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
+%%     lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
+%% add_lager_backend(TestModule, Outdir, false) ->
+%%     case Outdir of
+%%         undefined -> ok;
+%%         _ ->
+%%             gen_event:add_handler(lager_event, lager_file_backend,
+%%                 {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
+%%                  rt_config:get(lager_level, info), 10485760, "$D0", 1}),
+%%             lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
+%%     end.
 
-                    gen_fsm:send_event(self(), ConfirmFun());
-                _ ->
-                    gen_fsm:send_event(self(), {fail, test_setup_failed})
-            end
-    end.
-
-compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, true) ->
-    Nodes = rt_properties:get(nodes, SetupData),
-    WaitForTransfers = rt_properties:get(wait_for_transfers, SetupData),
-    UpgradeVersion = rt_properties:get(upgrade_version, SetupData),
-    fun() ->
-            InitialResult = ConfirmMod:ConfirmFun(SetupData, MetaData),
-            OtherResults = [begin
-                                ensure_all_nodes_running(Nodes),
-                                _ = rt_node:upgrade(Node, UpgradeVersion),
-                                _ = rt_cluster:maybe_wait_for_transfers(Nodes, WaitForTransfers),
-                                ConfirmMod:ConfirmFun(SetupData, MetaData)
-                            end || Node <- Nodes],
-            lists:all(fun(R) -> R =:= pass end, [InitialResult | OtherResults])
-    end;
-compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, false) ->
-    fun() ->
-            ConfirmMod:ConfirmFun(SetupData, MetaData)
-    end.
-
-ensure_all_nodes_running(Nodes) ->
-    [begin
-         ok = rt_node:start_and_wait(Node),
-         ok = rt:wait_until_registered(Node, riak_core_ring_manager)
-     end || Node <- Nodes].
-
-function_name(confirm, TestModule) ->
-    TMString = atom_to_list(TestModule),
-    Tokz = string:tokens(TMString, ":"),
-    case length(Tokz) of
-        1 -> {TestModule, confirm};
-        2 ->
-            [Module, Function] = Tokz,
-            {list_to_atom(Module), list_to_atom(Function)}
-    end.
-
-function_name(FunName, TestModule, Arity, Default) when is_atom(TestModule) ->
-    case erlang:function_exported(TestModule, FunName, Arity) of
-        true ->
-            {TestModule, FunName};
-        false ->
-            {Default, FunName}
-    end.
-
-add_lager_backend(TestModule, Outdir, true) ->
-    add_lager_backend(TestModule, Outdir, false),
-    gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
-    lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
-add_lager_backend(TestModule, Outdir, false) ->
-    case Outdir of
-        undefined -> ok;
-        _ ->
-            gen_event:add_handler(lager_event, lager_file_backend,
-                {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
-                 rt_config:get(lager_level, info), 10485760, "$D0", 1}),
-            lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
-    end.
-
-remove_lager_backend() ->
-    gen_event:delete_handler(lager_event, lager_file_backend, []),
-    gen_event:delete_handler(lager_event, riak_test_lager_backend, []).
+%% remove_lager_backend() ->
+%%     gen_event:delete_handler(lager_event, lager_file_backend, []),
+%%     gen_event:delete_handler(lager_event, riak_test_lager_backend, []).
 
 
 %% A return of `fail' must be converted to a non normal exit since
 %% status is determined by `rec_loop'.
 %%
 %% @see rec_loop/3
--spec return_to_exit(module(), atom(), list()) -> ok.
-return_to_exit(Mod, Fun, Args) ->
-    case apply(Mod, Fun, Args) of
-        pass ->
-            %% same as exit(normal)
-            ok;
-        fail ->
-            exit(fail)
-    end.
+%% -spec return_to_exit(module(), atom(), list()) -> ok.
+%% return_to_exit(Mod, Fun, Args) ->
+%%     case apply(Mod, Fun, Args) of
+%%         pass ->
+%%             %% same as exit(normal)
+%%             ok;
+%%         fail ->
+%%             exit(fail)
+%%     end.
 
+-spec check_backend(atom(), all | [atom()]) -> boolean().
+check_backend(_Backend, all) ->
+    true;
+check_backend(Backend, ValidBackends) ->
+    lists:member(Backend, ValidBackends).
+
+%% Check the prequisites for executing the test
 check_prereqs(Module) ->
-    try Module:module_info(attributes) of
-        Attrs ->
-            Prereqs = proplists:get_all_values(prereq, Attrs),
-            P2 = [{Prereq, rt_local:which(Prereq)} || Prereq <- Prereqs],
-            lager:info("~s prereqs: ~p", [Module, P2]),
-            [lager:warning("~s prereq '~s' not installed.",
-                           [Module, P]) || {P, false} <- P2],
-            lists:all(fun({_, Present}) -> Present end, P2)
-    catch
-        _DontCare:_Really ->
-            not_present
-    end.
+    Attrs = Module:module_info(attributes),
+    Prereqs = proplists:get_all_values(prereq, Attrs),
+    P2 = [{Prereq, rt_local:which(Prereq)} || Prereq <- Prereqs],
+    lager:info("~s prereqs: ~p", [Module, P2]),
+    [lager:warning("~s prereq '~s' not installed.",
+                   [Module, P]) || {P, false} <- P2],
+    lists:all(fun({_, Present}) -> Present end, P2).
+
 
 
 %% -spec(metadata() -> [{atom(), term()}]).

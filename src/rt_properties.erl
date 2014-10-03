@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 %% @doc Implements a set of functions for accessing and manipulating
-%% an `rt_properties' record.-module(rt_properties).
+%% an `rt_properties' record.
 
 -module(rt_properties).
 
@@ -37,6 +37,8 @@
           wait_for_transfers=false :: boolean(),
           valid_backends=all :: all | [atom()],
           make_cluster=true :: boolean(),
+          cluster_count=1 :: pos_integer(),
+          cluster_weights :: [float()],
           config=default_config() :: term()
          }).
 -type properties() :: #rt_properties_v1{}.
@@ -198,5 +200,9 @@ field_index(valid_backends) ->
     ?RT_PROPERTIES.valid_backends;
 field_index(make_cluster) ->
     ?RT_PROPERTIES.make_cluster;
+field_index(cluster_count) ->
+    ?RT_PROPERTIES.cluster_count;
+field_index(cluster_weights) ->
+    ?RT_PROPERTIES.cluster_weights;
 field_index(config) ->
     ?RT_PROPERTIES.config.

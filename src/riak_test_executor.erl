@@ -3,7 +3,7 @@
 -behavior(gen_fsm).
 
 %% API
--export([start_link/5,
+-export([start_link/6,
          send_event/1,
          stop/0]).
 
@@ -27,6 +27,7 @@
                 running_tests=[] :: [atom()],
                 waiting_tests=[] :: [atom()],
                 notify_pid :: pid(),
+                backend :: atom(),
                 upgrade_list :: [string()],
                 test_properties :: [proplists:proplist()],
                 runner_pids=[] :: [pid()],
@@ -38,10 +39,9 @@
 %%%===================================================================
 
 %% @doc Start the test executor
--spec start_link(atom(), string(), string(), string(), pid()) -> {ok, pid()} | ignore | {error, term()}.
-start_link(Tests, LogDir, ReportInfo, UpgradePath, NotifyPid) ->
-    UpgradeList = upgrade_list(UpgradePath),
-    Args = [Tests, LogDir, ReportInfo, UpgradeList, NotifyPid],
+-spec start_link(atom(), atom(), string(), string(), [string()], pid()) -> {ok, pid()} | ignore | {error, term()}.
+start_link(Tests, Backend, LogDir, ReportInfo, UpgradeList, NotifyPid) ->
+    Args = [Tests, Backend, LogDir, ReportInfo, UpgradeList, NotifyPid],
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
 
 send_event(Msg) ->
@@ -56,8 +56,9 @@ stop() ->
 %%% gen_fsm callbacks
 %%%===================================================================
 
-init([Tests, LogDir, ReportInfo, UpgradeList, NotifyPid]) ->
+init([Tests, Backend, LogDir, ReportInfo, UpgradeList, NotifyPid]) ->
     State = #state{pending_tests=Tests,
+                   backend=Backend,
                    log_dir=LogDir,
                    report_info=ReportInfo,
                    upgrade_list=UpgradeList,
@@ -134,12 +135,13 @@ launch_test({nodes, Nodes}, State) ->
     %% empty transition to `wait_for_completion'; otherwise,
     %% transition to `request_nodes'.
     #state{pending_tests=[NextTest | RestPending],
+           backend=Backend,
            test_properties=PropertiesList,
            runner_pids=Pids,
            running_tests=Running} = State,
     {NextTest, TestProps} = lists:keyfind(NextTest, 1, PropertiesList),
     UpdTestProps = rt_properties:set(nodes, Nodes, TestProps),
-    Pid = spawn_link(riak_test_runner, start, [NextTest, UpdTestProps]),
+    Pid = spawn_link(riak_test_runner, start, [NextTest, Backend, UpdTestProps]),
     UpdState = State#state{pending_tests=RestPending,
                            runner_pids=[Pid | Pids],
                            running_tests=[NextTest | Running]},
@@ -227,9 +229,3 @@ test_property(TestModule, Acc) ->
                                                           0,
                                                           rt_cluster),
     [{TestModule, PropsMod:PropsFun()} | Acc].
-
--spec upgrade_list(undefined | string()) -> undefined | [string()].
-upgrade_list(undefined) ->
-    undefined;
-upgrade_list(Path) ->
-    string:tokens(Path, ",").

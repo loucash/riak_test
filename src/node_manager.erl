@@ -3,8 +3,10 @@
 -behavior(gen_server).
 
 %% API
--export([start_link/2,
+-export([start_link/4,
          reserve_nodes/3,
+         return_nodes/1,
+         status/0,
          stop/0]).
 
 %% gen_server callbacks
@@ -23,8 +25,8 @@
 %%% API
 %%%===================================================================
 
-start_link(Nodes, VersionMap) ->
-    gen_server:start_link({local, ?MODULE}, [Nodes, VersionMap], []).
+start_link(Nodes, VersionMap, DefaultVersion, UpgradePath) ->
+    gen_server:start_link({local, ?MODULE}, [Nodes, VersionMap, DefaultVersion, UpgradePath], []).
 
 -spec reserve_nodes(pos_integer(), [string()], function()) -> ok.
 reserve_nodes(NodeCount, Versions, NotifyFun) ->
@@ -46,8 +48,18 @@ stop() ->
 %%% gen_server callbacks
 %%%===================================================================
 
-init([Nodes, VersionMap]) ->
+%% TODO Need to receive `upgrade_path' as well
+init([Nodes, VersionMap, DefaultVersion, undefined]) ->
     SortedNodes = lists:sort(Nodes),
+    %% Deploy nodes with `DefaultVersion'
+    deploy_nodes()
+    {ok, #state{nodes=SortedNodes,
+                nodes_available=SortedNodes,
+                version_map=VersionMap}};
+init([Nodes, VersionMap, _, [InitialVersion | _]]) ->
+    SortedNodes = lists:sort(Nodes),
+    %% Deploy nodes using the first entry from `UpgradeList'
+
     {ok, #state{nodes=SortedNodes,
                 nodes_available=SortedNodes,
                 version_map=VersionMap}}.
@@ -95,3 +107,54 @@ reserve(Count, _Versions, NodesAvailable)
     {NodesAvailable, []};
 reserve(Count, _Versions, NodesAvailable) ->
     lists:split(Count, NodesAvailable).
+
+-spec deploy_nodes(list(test_node())) -> [string()].
+deploy_nodes(Nodes, Version) ->
+    %% TODO Use `root_path' + `Version' to launch nodes in rtdev specifically
+    %% TODO Need to use harness-specific functions to do this
+
+    NodeConfig = [rt_config:version_to_config(Version) ||
+                     Version <- Versions],
+    %% Nodes = rt_harness:deploy_nodes(NodeConfig),
+
+    Path = relpath(root),
+    lager:info("Riak path: ~p", [Path]),
+    %% TODO: NumNodes, NodesN, and Nodes should come from the
+    %% harnesses involved
+    %% rt_harness:nodes(length(NodeConfig)),
+    %% NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
+    %% {Versions, Configs} = lists:unzip(NodeConfig),
+    %% VersionMap = lists:zip(NodesN, Versions),
+
+    %% %% Check that you have the right versions available
+    %% [check_node(Version) || Version <- VersionMap],
+    %% rt_config:set(rt_nodes, NodeMap),
+    %% rt_config:set(rt_versions, VersionMap),
+
+    %% create_dirs(Nodes),
+    %% Perform harness-specific configuration
+    rt_harness:configure_nodes(Nodes, Configs),
+
+    %% Start nodes
+    rt:pmap(fun rt_node:start/1, Nodes),
+
+    %% Ensure nodes started
+    [ok = rt:wait_until_pingable(N) || N <- Nodes],
+
+    %% %% Enable debug logging
+    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
+
+    %% We have to make sure that riak_core_ring_manager is running before we can go on.
+    [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
+
+    %% Ensure nodes are singleton clusters
+    [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
+                                              Version /= "0.14.2"],
+
+    lager:info("Deployed nodes: ~p", [Nodes]),
+
+    %% Wait for services to start
+    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
+    [ ok = rt:wait_for_service(Node, Service) || Node <- Nodes,
+                                              Service <- Services ],
+    Nodes.
