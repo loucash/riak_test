@@ -81,53 +81,53 @@ deploy_clusters(ClusterConfigs) ->
             DeployedClusters
     end.
 
-deploy_nodes(NodeConfig) ->
-    Path = relpath(root),
-    lager:info("Riak path: ~p", [Path]),
-    NumNodes = length(NodeConfig),
-    NodesN = lists:seq(1, NumNodes),
-    Nodes = [?DEV(N) || N <- NodesN],
-    NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
-    {Versions, Configs} = lists:unzip(NodeConfig),
-    VersionMap = lists:zip(NodesN, Versions),
-
-    %% Check that you have the right versions available
-    [ check_node(Version) || Version <- VersionMap ],
-    rt_config:set(rt_nodes, NodeMap),
-    rt_config:set(rt_versions, VersionMap),
-
-    create_dirs(Nodes),
-
-    %% Set initial config
-    add_default_node_config(Nodes),
-    rt:pmap(fun({_, default}) ->
-                    ok;
-               ({Node, {cuttlefish, Config}}) ->
-                    set_conf(Node, Config);
-               ({Node, Config}) ->
-                    rt_config:update_app_config(Node, Config)
-            end,
-            lists:zip(Nodes, Configs)),
-
+%% deploy_nodes(NodeConfig) ->
+deploy_nodes(Nodes, Version, Config) ->
     %% create snmp dirs, for EE
     create_dirs(Nodes),
 
+    %% Set initial config
+    ConfigUpdateFun =
+        fun(Node) ->
+                rt_harness:update_app_config(Node, Version, Config)
+        end,
+    rt:pmap(ConfigUpdateFun, Nodes),
+
     %% Start nodes
-    %%[run_riak(N, relpath(node_version(N)), "start") || N <- Nodes],
-    rt:pmap(fun(N) -> run_riak(N, relpath(node_version(N)), "start") end, NodesN),
+    RunRiakFun =
+        fun(Node) ->
+                rt_harness:run_riak(Node, Version, "start")
+        end,
+    rt:pmap(RunRiakFun, Nodes),
 
     %% Ensure nodes started
-    [ok = rt:wait_until_pingable(N) || N <- Nodes],
+    [ok = rt:wait_until_pingable(Node) || Node <- Nodes],
 
+    %% TODO Rubbish! Fix this.
     %% %% Enable debug logging
-    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
+    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug])
+    %% || N <- Nodes],
 
-    %% We have to make sure that riak_core_ring_manager is running before we can go on.
+    %% We have to make sure that riak_core_ring_manager is running
+    %% before we can go on.
     [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
 
     %% Ensure nodes are singleton clusters
-    [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
-                                              Version /= "0.14.2"],
+    case Version =/= "0.14.2" of
+        true ->
+            [ok = rt_ring:check_singleton_node(?DEV(Node))
+             || Node <- Nodes];
+        false ->
+            ok
+    end,
+
+    %% Wait for services to start
+    %% TODO: Plumb through service specification
+    Services = [riak_kv],
+    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
+    [ ok = rt:wait_for_service(Node, Service)
+      || Node <- Nodes,
+         Service <- Services ],
 
     lager:info("Deployed nodes: ~p", [Nodes]),
     Nodes.
@@ -451,3 +451,16 @@ setup_harness(VersionMap, Nodes) ->
     %% rt_config:set(rt_versions, VersionMap),
     [create_dirs(VersionNodes) || {_, VersionNodes} <- VersionMap],
     {Nodes, VersionMap}.
+
+%% @doc Stop nodes and wipe out their data directories
+stop_and_clean_nodes(Nodes, Version) when is_list(Nodes) ->
+    [rt_node:stop_and_wait(Node) || Node <- Nodes],
+    clean_data_dir(Nodes).
+
+clean_data_dir(Nodes) ->
+    clean_data_dir(Nodes, "").
+
+clean_data_dir(Nodes, SubDir) when not is_list(Nodes) ->
+    clean_data_dir([Nodes], SubDir);
+clean_data_dir(Nodes, SubDir) when is_list(Nodes) ->
+    rt_harness:clean_data_dir(Nodes, SubDir).

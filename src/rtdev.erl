@@ -42,7 +42,7 @@
          attach/2,
          attach_direct/2,
          console/2,
-         update_app_config/2,
+         update_app_config/3,
          teardown/0,
          set_conf/2,
          set_advanced_conf/2]).
@@ -52,7 +52,7 @@
 
 -define(DEVS(N), lists:concat(["dev", N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
--define(PATH, (rt_config:get(rtdev_path))).
+-define(PATH, (rt_config:get(root_path))).
 
 get_deps() ->
     lists:flatten(io_lib:format("~s/dev/dev1/lib", [relpath(current)])).
@@ -84,27 +84,26 @@ run_git(Path, Cmd) ->
     {0, Out} = cmd(gitcmd(Path, Cmd)),
     Out.
 
-run_riak(N, Path, Cmd) ->
-    lager:info("Running: ~s", [riakcmd(Path, N, Cmd)]),
-    R = os:cmd(riakcmd(Path, N, Cmd)),
-    case Cmd of
-        "start" ->
-            rt_cover:maybe_start_on_node(?DEV(N), node_version(N)),
-            %% Intercepts may load code on top of the cover compiled
-            %% modules. We'll just get no coverage info then.
-            case rt_intercept:are_intercepts_loaded(?DEV(N)) of
-                false ->
-                    ok = rt_intercept:load_intercepts([?DEV(N)]);
-                true ->
-                    ok
-            end,
-            R;
-        "stop" ->
-            rt_cover:maybe_stop_on_node(?DEV(N)),
-            R;
-        _ ->
-            R
-    end.
+run_riak(Node, Version, "start") ->
+    Path = rt_config:get(root_path) ++ Version,
+    RiakCmd = riakcmd(Path, Node, "start"),
+    lager:info("Running: ~s", [RiakCmd]),
+    CmdRes = os:cmd(RiakCmd),
+    rt_cover:maybe_start_on_node(?DEV(Node), Version),
+    %% Intercepts may load code on top of the cover compiled
+    %% modules. We'll just get no coverage info then.
+    case rt_intercept:are_intercepts_loaded(?DEV(Node)) of
+        false ->
+            ok = rt_intercept:load_intercepts([?DEV(Node)]);
+        true ->
+            ok
+    end,
+    CmdRes;
+run_riak(Node, Version, "stop") ->
+    rt_cover:maybe_stop_on_node(?DEV(Node)),
+    os:cmd(riakcmd(rt_config:get(root_path) ++ Version, Node, "stop"));
+run_riak(Node, Version, Cmd) ->
+    os:cmd(riakcmd(rt_config:get(root_path) ++ Version, Node, Cmd)).
 
 run_riak_repl(N, Path, Cmd) ->
     lager:info("Running: ~s", [riakcmd(Path, N, Cmd)]),
@@ -123,22 +122,26 @@ versions() ->
 
 -spec harness_nodes(string()) -> [string()].
 harness_nodes(Version) ->
-    Path = rt_config:get(root_path) ++ Version,
-    case file:list_dir(Path) of
+    case file:list_dir(rt_config:get(root_path) ++ Version) of
         {ok, VersionFiles} ->
             [Node || Node <- VersionFiles, filelib:is_dir(Node)];
         {error, _} ->
             []
     end.
 
-setup_harness() ->
-    %% make sure we stop any cover processes on any nodes
-    %% otherwise, if the next test boots a legacy node we'll end up with cover
+so_fresh_so_clean(VersionMap) ->
+    %% make sure we stop any cover processes on any nodes otherwise,
+    %% if the next test boots a legacy node we'll end up with cover
     %% incompatabilities and crash the cover server
     rt_cover:maybe_stop_on_nodes(),
     Path = relpath(root),
-    %% Stop all discoverable nodes, not just nodes we'll be using for this test.
-    rt:pmap(fun(X) -> stop_all(X ++ "/dev") end, devpaths()),
+    %% Stop all discoverable nodes, not just nodes we'll be using for
+    %% this test.
+    StopAllFun =
+        fun({Version, VersionNodes}) ->
+                stop_nodes(filename:join([?PATH, Version]), VersionNodes)
+        end,
+    rt:pmap(StopAllFun, VersionMap),
 
     %% Reset nodes to base state
     lager:info("Resetting nodes to fresh state"),
@@ -146,19 +149,23 @@ setup_harness() ->
     _ = run_git(Path, "clean -fd"),
 
     lager:info("Cleaning up lingering pipe directories"),
-    rt:pmap(fun(Dir) ->
+    rt:pmap(fun({Version, _}) ->
                     %% when joining two absolute paths, filename:join intentionally
                     %% throws away the first one. ++ gets us around that, while
                     %% keeping some of the security of filename:join.
                     %% the extra slashes will be pruned by filename:join, but this
                     %% ensures that there will be at least one between "/tmp" and Dir
-                    PipeDir = filename:join(["/tmp//" ++ Dir, "dev"]),
+                    %% TODO: Double check this is correct
+                    PipeDir = filename:join(["/tmp", ?PATH, Version]),
                     {0, _} = cmd("rm -rf " ++ PipeDir)
-            end, devpaths()),
+            end, VersionMap),
+    ok.
 
+setup_harness() ->
     %% Get node names and populate node map
     VersionMap = [{Version, harness_nodes(Version)} || Version <- versions()],
     Nodes = harness_nodes(rt_config:get(default_version, "head")),
+    so_fresh_so_clean(VersionMap),
     rt_harness_util:setup_harness(VersionMap, Nodes).
 
 relpath(Vsn) ->
@@ -266,26 +273,26 @@ all_the_app_configs(DevPath) ->
             AppConfigs
     end.
 
-update_app_config(all, Config) ->
-    lager:info("rtdev:update_app_config(all, ~p)", [Config]),
-    [ update_app_config(DevPath, Config) || DevPath <- devpaths()];
-update_app_config(Node, Config) when is_atom(Node) ->
-    N = node_id(Node),
-    Path = relpath(node_version(N)),
-    FileFormatString = "~s/dev/dev~b/etc/~s.config",
+%% update_app_config(all, Config) ->
+%%     lager:info("rtdev:update_app_config(all, ~p)", [Config]),
+%%     [ update_app_config(DevPath, Config) || DevPath <- devpaths()];
+update_app_config(Node, Version, Config) ->
+    Path = ?PATH ++ Version,
+    FileFormatString = "~s/~s/etc/~s.config",
 
-    AppConfigFile = io_lib:format(FileFormatString, [Path, N, "app"]),
-    AdvConfigFile = io_lib:format(FileFormatString, [Path, N, "advanced"]),
+    AppConfigFile = io_lib:format(FileFormatString, [Path, Node, "app"]),
+    AdvConfigFile = io_lib:format(FileFormatString, [Path, Node, "advanced"]),
     %% If there's an app.config, do it old style
-    %% if not, use cuttlefish's adavnced.config
+    %% if not, use cuttlefish's advanced.config
     case filelib:is_file(AppConfigFile) of
         true ->
             update_app_config_file(AppConfigFile, Config);
         _ ->
             update_app_config_file(AdvConfigFile, Config)
-    end;
-update_app_config(DevPath, Config) ->
-    [update_app_config_file(AppConfig, Config) || AppConfig <- all_the_app_configs(DevPath)].
+    end.
+%% update_app_config(DevPath, Config) ->
+%%     [update_app_config_file(AppConfig, Config) ||
+%%         AppConfig <- all_the_app_configs(DevPath)].
 
 update_app_config_file(ConfigFile, Config) ->
     lager:info("rtdev:update_app_config_file(~s, ~p)", [ConfigFile, Config]),
@@ -425,74 +432,76 @@ configure_nodes(Nodes, Configs) ->
             end,
             lists:zip(Nodes, Configs)).
 
-deploy_nodes(NodeConfig) ->
-    Path = relpath(root),
-    lager:info("Riak path: ~p", [Path]),
-    NumNodes = length(NodeConfig),
-    %% TODO: The starting index should not be fixed to 1
-    NodesN = lists:seq(1, NumNodes),
-    Nodes = [?DEV(N) || N <- NodesN],
-    NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
-    {Versions, Configs} = lists:unzip(NodeConfig),
-    VersionMap = lists:zip(NodesN, Versions),
+%% deploy_nodes(NodeConfig) ->
+%%     Path = relpath(root),
+%%     lager:info("Riak path: ~p", [Path]),
+%%     NumNodes = length(NodeConfig),
+%%     %% TODO: The starting index should not be fixed to 1
+%%     NodesN = lists:seq(1, NumNodes),
+%%     Nodes = [?DEV(N) || N <- NodesN],
+%%     NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
+%%     {Versions, Configs} = lists:unzip(NodeConfig),
+%%     VersionMap = lists:zip(NodesN, Versions),
 
-    %% Check that you have the right versions available
-    [ check_node(Version) || Version <- VersionMap ],
-    rt_config:set(rt_nodes, NodeMap),
-    rt_config:set(rt_versions, VersionMap),
+%%     %% Check that you have the right versions available
+%%     [ check_node(Version) || Version <- VersionMap ],
+%%     rt_config:set(rt_nodes, NodeMap),
+%%     rt_config:set(rt_versions, VersionMap),
 
-    create_dirs(Nodes),
+%%     create_dirs(Nodes),
 
-    %% Set initial config
-    add_default_node_config(Nodes),
-    rt:pmap(fun({_, default}) ->
-                    ok;
-               ({Node, {cuttlefish, Config}}) ->
-                    set_conf(Node, Config);
-               ({Node, Config}) ->
-                    update_app_config(Node, Config)
-            end,
-            lists:zip(Nodes, Configs)),
+%%     %% Set initial config
+%%     add_default_node_config(Nodes),
+%%     rt:pmap(fun({_, default}) ->
+%%                     ok;
+%%                ({Node, {cuttlefish, Config}}) ->
+%%                     set_conf(Node, Config);
+%%                ({Node, Config}) ->
+%%                     update_app_config(Node, Config)
+%%             end,
+%%             lists:zip(Nodes, Configs)),
 
-    %% create snmp dirs, for EE
-    create_dirs(Nodes),
+%%     %% create snmp dirs, for EE
+%%     create_dirs(Nodes),
 
-    %% Start nodes
-    %%[run_riak(N, relpath(node_version(N)), "start") || N <- Nodes],
-    rt:pmap(fun(N) -> run_riak(N, relpath(node_version(N)), "start") end, NodesN),
+%%     %% Start nodes
+%%     %%[run_riak(N, relpath(node_version(N)), "start") || N <- Nodes],
+%%     rt:pmap(fun(N) -> run_riak(N, relpath(node_version(N)), "start") end, NodesN),
 
-    %% Ensure nodes started
-    [ok = rt:wait_until_pingable(N) || N <- Nodes],
+%%     %% Ensure nodes started
+%%     [ok = rt:wait_until_pingable(N) || N <- Nodes],
 
-    %% %% Enable debug logging
-    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
+%%     %% %% Enable debug logging
+%%     %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
 
-    %% We have to make sure that riak_core_ring_manager is running before we can go on.
-    [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
+%%     %% We have to make sure that riak_core_ring_manager is running before we can go on.
+%%     [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
 
-    %% Ensure nodes are singleton clusters
-    [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
-                                              Version /= "0.14.2"],
+%%     %% Ensure nodes are singleton clusters
+%%     [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
+%%                                               Version /= "0.14.2"],
 
-    lager:info("Deployed nodes: ~p", [Nodes]),
-    Nodes.
+%%     lager:info("Deployed nodes: ~p", [Nodes]),
+%%     Nodes.
 
-gen_stop_fun(Timeout) ->
-    fun({C,Node}) ->
-            net_kernel:hidden_connect_node(Node),
-            case rpc:call(Node, os, getpid, []) of
+gen_stop_fun(Path, Timeout) ->
+    fun(Node) ->
+            NodeName = ?DEV(Node),
+            NodePath = filename:join(Path, Node),
+            net_kernel:hidden_connect_node(NodeName),
+            case rpc:call(NodeName, os, getpid, []) of
                 PidStr when is_list(PidStr) ->
                     lager:info("Preparing to stop node ~p (process ID ~s) with init:stop/0...",
-                               [Node, PidStr]),
-                    rpc:call(Node, init, stop, []),
+                               [NodePath, PidStr]),
+                    rpc:call(NodeName, init, stop, []),
                     %% If init:stop/0 fails here, the wait_for_pid/2 call
                     %% below will timeout and the process will get cleaned
                     %% up by the kill_stragglers/2 function
                     wait_for_pid(PidStr, Timeout);
                 BadRpc ->
-                    Cmd = C ++ "/bin/riak stop",
+                    Cmd =  filename:join([Path, Node, "bin/riak stop"]),
                     lager:info("RPC to node ~p returned ~p, will try stop anyway... ~s",
-                               [Node, BadRpc, Cmd]),
+                               [NodeName, BadRpc, Cmd]),
                     Output = os:cmd(Cmd),
                     Status = case Output of
                                  "ok\n" ->
@@ -507,12 +516,12 @@ gen_stop_fun(Timeout) ->
                                  _ ->
                                      "wasn't running"
                              end,
-                    lager:info("Stopped node ~p, stop status: ~s.", [Node, Status])
+                    lager:info("Stopped node ~p, stop status: ~s.", [NodePath, Status])
             end
     end.
 
-kill_stragglers(DevPath, Timeout) ->
-    {ok, Re} = re:compile("^\\s*\\S+\\s+(\\d+).+\\d+\\s+"++DevPath++"\\S+/beam"),
+kill_stragglers(Path, Timeout) ->
+    {ok, Re} = re:compile("^\\s*\\S+\\s+(\\d+).+\\d+\\s+"++Path++"\\S+/beam"),
     ReOpts = [{capture,all_but_first,list}],
     Pids = tl(string:tokens(os:cmd("ps -ef"), "\n")),
     Fold = fun(Proc, Acc) ->
@@ -545,29 +554,22 @@ wait_for_pid(PidStr, Timeout) ->
         _ -> ok
     end.
 
-stop_all(DevPath) ->
-    case filelib:is_dir(DevPath) of
-        true ->
-            Devs = filelib:wildcard(DevPath ++ "/dev*"),
-            Nodes = [?DEV(N) || N <- lists:seq(1, length(Devs))],
-            MyNode = 'riak_test@127.0.0.1',
-            case net_kernel:start([MyNode, longnames]) of
-                {ok, _} ->
-                    true = erlang:set_cookie(MyNode, riak);
-                {error,{already_started,_}} ->
-                    ok
-            end,
-            lager:info("Trying to obtain node shutdown_time via RPC..."),
-            Tmout = case rpc:call(hd(Nodes), init, get_argument, [shutdown_time]) of
-                        {ok,[[Tm]]} -> list_to_integer(Tm)+10000;
-                        _ -> 20000
-                    end,
-            lager:info("Using node shutdown_time of ~w", [Tmout]),
-            rt:pmap(gen_stop_fun(Tmout), lists:zip(Devs, Nodes)),
-            kill_stragglers(DevPath, Tmout);
-        _ ->
-            lager:info("~s is not a directory.", [DevPath])
+stop_nodes(Path, Nodes) ->
+    MyNode = 'riak_test@127.0.0.1',
+    case net_kernel:start([MyNode, longnames]) of
+        {ok, _} ->
+            true = erlang:set_cookie(MyNode, riak);
+        {error,{already_started,_}} ->
+            ok
     end,
+    lager:info("Trying to obtain node shutdown_time via RPC..."),
+    Tmout = case rpc:call(hd(Nodes), init, get_argument, [shutdown_time]) of
+                {ok,[[Tm]]} -> list_to_integer(Tm)+10000;
+                _ -> 20000
+            end,
+    lager:info("Using node shutdown_time of ~w", [Tmout]),
+    rt:pmap(gen_stop_fun(Path, Tmout), Nodes),
+    kill_stragglers(Path, Tmout),
     ok.
 
 stop(Node) ->
@@ -581,9 +583,9 @@ stop(Node) ->
     ?assertEqual(ok, rt:wait_until(Node, F)),
     ok.
 
-start(Node) ->
-    N = node_id(Node),
-    run_riak(N, relpath(node_version(N)), "start"),
+start(Node, Version) ->
+    %% N = node_id(Node),
+    run_riak(Node, Version, "start"),
     ok.
 
 attach(Node, Expected) ->

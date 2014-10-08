@@ -4,7 +4,7 @@
 
 %% API
 -export([start_link/4,
-         reserve_nodes/3,
+         reserve_nodes/4,
          return_nodes/1,
          status/0,
          stop/0]).
@@ -19,6 +19,8 @@
 
 -record(state, {nodes :: [string()],
                 nodes_available :: [string()],
+                nodes_deployed=[] :: [string()],
+                initial_version :: string(),
                 version_map :: [{string(), [string()]}]}).
 
 %%%===================================================================
@@ -26,11 +28,12 @@
 %%%===================================================================
 
 start_link(Nodes, VersionMap, DefaultVersion, UpgradePath) ->
-    gen_server:start_link({local, ?MODULE}, [Nodes, VersionMap, DefaultVersion, UpgradePath], []).
+    Args = [Nodes, VersionMap, DefaultVersion, UpgradePath],
+    gen_server:start_link({local, ?MODULE}, Args, []).
 
--spec reserve_nodes(pos_integer(), [string()], function()) -> ok.
-reserve_nodes(NodeCount, Versions, NotifyFun) ->
-    gen_server:cast(?MODULE, {reserve_nodes, NodeCount, Versions, NotifyFun}).
+-spec reserve_nodes(pos_integer(), [string()], term(), function()) -> ok.
+reserve_nodes(NodeCount, Versions, Config, NotifyFun) ->
+    gen_server:cast(?MODULE, {reserve_nodes, NodeCount, Versions, Config, NotifyFun}).
 
 -spec return_nodes([string()]) -> ok.
 return_nodes(Nodes) ->
@@ -48,20 +51,18 @@ stop() ->
 %%% gen_server callbacks
 %%%===================================================================
 
-%% TODO Need to receive `upgrade_path' as well
+%% Initial node deployment is deferred until the first call to
 init([Nodes, VersionMap, DefaultVersion, undefined]) ->
     SortedNodes = lists:sort(Nodes),
-    %% Deploy nodes with `DefaultVersion'
-    deploy_nodes()
     {ok, #state{nodes=SortedNodes,
                 nodes_available=SortedNodes,
+                initial_version=DefaultVersion,
                 version_map=VersionMap}};
 init([Nodes, VersionMap, _, [InitialVersion | _]]) ->
     SortedNodes = lists:sort(Nodes),
-    %% Deploy nodes using the first entry from `UpgradeList'
-
     {ok, #state{nodes=SortedNodes,
                 nodes_available=SortedNodes,
+                initial_version=InitialVersion,
                 version_map=VersionMap}}.
 
 handle_call(status, _From, State) ->
@@ -72,12 +73,14 @@ handle_call(status, _From, State) ->
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.
 
-handle_cast({reserve_nodes, Count, Versions, NotifyFun}, State) ->
-    {Result, NodesNowAvailable} =
-        reserve(Count, Versions, State#state.nodes_available),
+handle_cast({reserve_nodes, Count, Versions, Config, NotifyFun}, State) ->
+    {Result, UpdState} =
+        reserve(Count, Versions, Config, State),
     NotifyFun(Result),
-    {noreply, State#state{nodes_available=NodesNowAvailable}};
+    {noreply, UpdState};
 handle_cast({return_nodes, Nodes}, State) ->
+    %% TODO: Stop nodes, clean data dirs, and restart
+    %% so they are ready for next use.
     NodesAvailable = State#state.nodes_available,
     NodesNowAvailable = lists:merge(lists:sort(Nodes), NodesAvailable),
     {noreply, State#state{nodes_available=NodesNowAvailable}};
@@ -88,6 +91,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _) ->
+    %% TODO: Stop and reset all deployed nodes
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -99,62 +103,40 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% TODO: Circle back to add version checking after get
 %% basic test execution functioning
-reserve(Count, _Versions, NodesAvailable)
+reserve(Count, _Versions, _Config, State=#state{nodes_available=NodesAvailable})
   when Count > length(NodesAvailable) ->
-    {not_enough_nodes, NodesAvailable};
-reserve(Count, _Versions, NodesAvailable)
+    {not_enough_nodes, State};
+reserve(Count, _Versions, Config, State=#state{nodes_available=NodesAvailable,
+                                               nodes_deployed=NodesDeployed,
+                                               initial_version=InitialVersion})
   when Count =:= length(NodesAvailable) ->
-    {NodesAvailable, []};
-reserve(Count, _Versions, NodesAvailable) ->
-    lists:split(Count, NodesAvailable).
+    UpdNodesDeployed = maybe_deploy_nodes(NodesAvailable,
+                                          {NodesDeployed,
+                                           Config,
+                                           InitialVersion}),
+    UpdState = State#state{nodes_available=[],
+                           nodes_deployed=UpdNodesDeployed},
+    {NodesAvailable, UpdState};
+reserve(Count, _Versions, Config, State=#state{nodes_available=NodesAvailable,
+                                               nodes_deployed=NodesDeployed,
+                                               initial_version=InitialVersion}) ->
+    {Reserved, UpdNodesAvailable} = lists:split(Count, NodesAvailable),
+    UpdNodesDeployed = maybe_deploy_nodes(Reserved,
+                                          {NodesDeployed,
+                                           Config,
+                                           InitialVersion}),
+    UpdState = State#state{nodes_available=UpdNodesAvailable,
+                           nodes_deployed=UpdNodesDeployed},
+    {Reserved, UpdState}.
 
--spec deploy_nodes(list(test_node())) -> [string()].
-deploy_nodes(Nodes, Version) ->
-    %% TODO Use `root_path' + `Version' to launch nodes in rtdev specifically
-    %% TODO Need to use harness-specific functions to do this
-
-    NodeConfig = [rt_config:version_to_config(Version) ||
-                     Version <- Versions],
-    %% Nodes = rt_harness:deploy_nodes(NodeConfig),
-
-    Path = relpath(root),
-    lager:info("Riak path: ~p", [Path]),
-    %% TODO: NumNodes, NodesN, and Nodes should come from the
-    %% harnesses involved
-    %% rt_harness:nodes(length(NodeConfig)),
-    %% NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
-    %% {Versions, Configs} = lists:unzip(NodeConfig),
-    %% VersionMap = lists:zip(NodesN, Versions),
-
-    %% %% Check that you have the right versions available
-    %% [check_node(Version) || Version <- VersionMap],
-    %% rt_config:set(rt_nodes, NodeMap),
-    %% rt_config:set(rt_versions, VersionMap),
-
-    %% create_dirs(Nodes),
-    %% Perform harness-specific configuration
-    rt_harness:configure_nodes(Nodes, Configs),
-
-    %% Start nodes
-    rt:pmap(fun rt_node:start/1, Nodes),
-
-    %% Ensure nodes started
-    [ok = rt:wait_until_pingable(N) || N <- Nodes],
-
-    %% %% Enable debug logging
-    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
-
-    %% We have to make sure that riak_core_ring_manager is running before we can go on.
-    [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
-
-    %% Ensure nodes are singleton clusters
-    [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
-                                              Version /= "0.14.2"],
-
-    lager:info("Deployed nodes: ~p", [Nodes]),
-
-    %% Wait for services to start
-    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
-    [ ok = rt:wait_for_service(Node, Service) || Node <- Nodes,
-                                              Service <- Services ],
-    Nodes.
+maybe_deploy_nodes(Nodes, {Nodes, _, _}) ->
+    %% All nodes already deployed, move along
+    Nodes;
+maybe_deploy_nodes(Requested, {Deployed, Version, Config}) ->
+    case Deployed -- Requested of
+        [] ->
+            Deployed;
+        NodesToDeploy ->
+            _ = rt_harness_util:deploy_nodes(NodesToDeploy, Version, Config),
+            lists:sort(Deployed ++ NodesToDeploy)
+    end.
