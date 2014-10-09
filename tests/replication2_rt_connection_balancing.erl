@@ -112,7 +112,7 @@ verify_peer_connections_3_2(TestSetup) ->
   pass.
 
 teardown(TestSetup) ->
-  {ANodes, BNodes} = TestSetup,
+  [ANodes, BNodes] = TestSetup,
   rt:clean_cluster(ANodes),
   rt:clean_cluster(BNodes).
 
