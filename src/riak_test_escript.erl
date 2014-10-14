@@ -21,6 +21,8 @@
 %% @private
 -module(riak_test_escript).
 -include("rt.hrl").
+%% TODO: Temporary build workaround, remove!!
+-compile(export_all).
 -export([main/1]).
 -export([add_deps/1]).
 
@@ -77,7 +79,7 @@ report_results(_Results) ->
 %% TODO: Use `TestCount' and `Completed' to display progress output
 wait_for_results(Executor, TestResults, TestCount, Completed) ->
     receive
-        {Executor, {test_result, Result, TestMetaData}} ->
+        {Executor, {test_result, Result, _TestMetaData}} ->
             wait_for_results(Executor, [Result | TestResults], TestCount, Completed+1);
         {Executor, done} ->
             rt_cover:stop(),
@@ -387,7 +389,7 @@ is_runnable_test({TestModule, _}) ->
     erlang:function_exported(Mod, Fun, 0) orelse
         erlang:function_exported(Mod, Fun, 2).
 
-run_tests(Tests, Outdir, Report, HarnessArgs) ->
+%% run_tests(Tests, Outdir, Report, HarnessArgs) ->
     %% Need properties for tests prior to getting here Need server to
     %% manage the aquisition of nodes and to handle comparison of test
     %% `node_count' property with resources available. Also handle

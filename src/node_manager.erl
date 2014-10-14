@@ -79,8 +79,9 @@ handle_cast({reserve_nodes, Count, Versions, Config, NotifyFun}, State) ->
     NotifyFun(Result),
     {noreply, UpdState};
 handle_cast({return_nodes, Nodes}, State) ->
-    %% TODO: Stop nodes, clean data dirs, and restart
+    %% Stop nodes, clean data dirs, and restart
     %% so they are ready for next use.
+    [stop_clean_start(Node, State#state.initial_version) || Node <- Nodes],
     NodesAvailable = State#state.nodes_available,
     NodesNowAvailable = lists:merge(lists:sort(Nodes), NodesAvailable),
     {noreply, State#state{nodes_available=NodesNowAvailable}};
@@ -90,8 +91,9 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _) ->
-    %% TODO: Stop and reset all deployed nodes
+terminate(_Reason, State) ->
+    %% Stop and reset all deployed nodes
+    stop_and_clean(State#state.nodes_deployed, State#state.initial_version),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -100,6 +102,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+stop_and_clean(Node, Version) ->
+    rt_node:stop_and_wait(Node),
+    rt_node:clean_data_dir(Node, Version).
+
+stop_clean_start(Node, Version) ->
+    stop_and_clean(Node, Version),
+    rt_node:start(Node, Version).
 
 %% TODO: Circle back to add version checking after get
 %% basic test execution functioning

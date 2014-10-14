@@ -43,7 +43,14 @@
          wait_until_nodes_ready/1,
          wait_until_owners_according_to/2,
          wait_until_nodes_agree_about_ownership/1,
-         is_pingable/1]).
+         is_pingable/1,
+         clean_data_dir/2]).
+
+clean_data_dir(Node, Version) ->
+    clean_data_dir(Node, Version, "").
+
+clean_data_dir(Node, Version, SubDir) ->
+    rt_harness:clean_data_dir(Node, Version, SubDir).
 
 %% @doc Start the specified Riak node
 start(Node) ->
@@ -60,7 +67,7 @@ async_start(Node) ->
 %% @doc Stop the specified Riak `Node'.
 stop(Node) ->
     lager:info("Stopping riak on ~p", [Node]),
-    timer:sleep(10000), %% I know, I know!
+    %% timer:sleep(10000), %% I know, I know!
     rt_harness:stop(Node).
     %%rpc:call(Node, init, stop, []).
 

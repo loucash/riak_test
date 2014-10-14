@@ -32,7 +32,8 @@
          cmd/1,
          cmd/2,
          console/2,
-         deploy_clusters/1,
+         %% deploy_clusters/1,
+         deploy_nodes/3,
          get_ip/1,
          node_id/1,
          node_version/1,
@@ -64,22 +65,22 @@ attach_direct(Node, Expected) ->
 console(Node, Expected) ->
     interactive(Node, "console", Expected).
 
-deploy_clusters(ClusterConfigs) ->
-    NumNodes = rt_config:get(num_nodes, 6),
-    RequestedNodes = lists:flatten(ClusterConfigs),
+%% deploy_clusters(ClusterConfigs) ->
+%%     NumNodes = rt_config:get(num_nodes, 6),
+%%     RequestedNodes = lists:flatten(ClusterConfigs),
 
-    case length(RequestedNodes) > NumNodes of
-        true ->
-            erlang:error("Requested more nodes than available");
-        false ->
-            Nodes = deploy_nodes(RequestedNodes),
-            {DeployedClusters, _} = lists:foldl(
-                    fun(Cluster, {Clusters, RemNodes}) ->
-                        {A, B} = lists:split(length(Cluster), RemNodes),
-                        {Clusters ++ [A], B}
-                end, {[], Nodes}, ClusterConfigs),
-            DeployedClusters
-    end.
+%%     case length(RequestedNodes) > NumNodes of
+%%         true ->
+%%             erlang:error("Requested more nodes than available");
+%%         false ->
+%%             Nodes = deploy_nodes(RequestedNodes),
+%%             {DeployedClusters, _} = lists:foldl(
+%%                     fun(Cluster, {Clusters, RemNodes}) ->
+%%                         {A, B} = lists:split(length(Cluster), RemNodes),
+%%                         {Clusters ++ [A], B}
+%%                 end, {[], Nodes}, ClusterConfigs),
+%%             DeployedClusters
+%%     end.
 
 %% deploy_nodes(NodeConfig) ->
 deploy_nodes(Nodes, Version, Config) ->
@@ -379,26 +380,26 @@ create_dirs(Nodes) ->
     Snmp = [node_path(Node) ++ "/data/snmp/agent/db" || Node <- Nodes],
     [?assertCmd("mkdir -p " ++ Dir) || Dir <- Snmp].
 
-check_node({_N, Version}) ->
-    case proplists:is_defined(Version, rt_config:get(rtdev_path)) of
-        true -> ok;
-        _ ->
-            lager:error("You don't have Riak ~s installed or configured", [Version]),
-            erlang:error("You don't have Riak " ++ atom_to_list(Version) ++ " installed or configured")
-    end.
+%% check_node({_N, Version}) ->
+%%     case proplists:is_defined(Version, rt_config:get(rtdev_path)) of
+%%         true -> ok;
+%%         _ ->
+%%             lager:error("You don't have Riak ~s installed or configured", [Version]),
+%%             erlang:error("You don't have Riak " ++ atom_to_list(Version) ++ " installed or configured")
+%%     end.
 
-add_default_node_config(Nodes) ->
-    case rt_config:get(rt_default_config, undefined) of
-        undefined -> ok;
-        Defaults when is_list(Defaults) ->
-            rt:pmap(fun(Node) ->
-                            rt_config:update_app_config(Node, Defaults)
-                    end, Nodes),
-            ok;
-        BadValue ->
-            lager:error("Invalid value for rt_default_config : ~p", [BadValue]),
-            throw({invalid_config, {rt_default_config, BadValue}})
-    end.
+%% add_default_node_config(Nodes) ->
+%%     case rt_config:get(rt_default_config, undefined) of
+%%         undefined -> ok;
+%%         Defaults when is_list(Defaults) ->
+%%             rt:pmap(fun(Node) ->
+%%                             rt_config:update_app_config(Node, Defaults)
+%%                     end, Nodes),
+%%             ok;
+%%         BadValue ->
+%%             lager:error("Invalid value for rt_default_config : ~p", [BadValue]),
+%%             throw({invalid_config, {rt_default_config, BadValue}})
+%%     end.
 
 node_path(Node) ->
     N = node_id(Node),
@@ -452,15 +453,15 @@ setup_harness(VersionMap, Nodes) ->
     [create_dirs(VersionNodes) || {_, VersionNodes} <- VersionMap],
     {Nodes, VersionMap}.
 
-%% @doc Stop nodes and wipe out their data directories
-stop_and_clean_nodes(Nodes, Version) when is_list(Nodes) ->
-    [rt_node:stop_and_wait(Node) || Node <- Nodes],
-    clean_data_dir(Nodes).
+%% %% @doc Stop nodes and wipe out their data directories
+%% stop_and_clean_nodes(Nodes, Version) when is_list(Nodes) ->
+%%     [rt_node:stop_and_wait(Node) || Node <- Nodes],
+%%     clean_data_dir(Nodes).
 
-clean_data_dir(Nodes) ->
-    clean_data_dir(Nodes, "").
+%% clean_data_dir(Nodes) ->
+%%     clean_data_dir(Nodes, "").
 
-clean_data_dir(Nodes, SubDir) when not is_list(Nodes) ->
-    clean_data_dir([Nodes], SubDir);
-clean_data_dir(Nodes, SubDir) when is_list(Nodes) ->
-    rt_harness:clean_data_dir(Nodes, SubDir).
+%% clean_data_dir(Nodes, SubDir) when not is_list(Nodes) ->
+%%     clean_data_dir([Nodes], SubDir);
+%% clean_data_dir(Nodes, SubDir) when is_list(Nodes) ->
+%%     rt_harness:clean_data_dir(Nodes, SubDir).

@@ -20,7 +20,7 @@
 
 -module(rtdev).
 -behaviour(test_harness).
--export([start/1,
+-export([start/2,
          stop/1,
          deploy_clusters/1,
          clean_data_dir/2,
@@ -29,7 +29,7 @@
          cmd/1,
          cmd/2,
          setup_harness/0,
-         setup_harness/2,
+         %% setup_harness/2,
          get_version/0,
          get_backends/0,
          set_backend/1,
@@ -53,6 +53,7 @@
 -define(DEVS(N), lists:concat(["dev", N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
 -define(PATH, (rt_config:get(root_path))).
+-define(SCRATCH_DIR, (rt_config:get(rt_scatch_dir))).
 
 get_deps() ->
     lists:flatten(io_lib:format("~s/dev/dev1/lib", [relpath(current)])).
@@ -181,37 +182,41 @@ relpath(root, Path) ->
 relpath(_, _) ->
     throw("Version requested but only one path provided").
 
-upgrade(Node, NewVersion) ->
-    upgrade(Node, NewVersion, same).
+%% upgrade(Node, CurrentVersion, NewVersion) ->
+%%     upgrade(Node, CurrentVersion, NewVersion, same).
 
-upgrade(Node, NewVersion, Config) ->
-    N = node_id(Node),
-    Version = node_version(N),
-    lager:info("Upgrading ~p : ~p -> ~p", [Node, Version, NewVersion]),
+upgrade(Node, CurrentVersion, NewVersion, Config) ->
+    %% N = node_id(Node),
+    %% Version = node_version(N),
+    lager:info("Upgrading ~p : ~p -> ~p", [Node, CurrentVersion, NewVersion]),
     stop(Node),
     rt:wait_until_unpingable(Node),
-    OldPath = relpath(Version),
-    NewPath = relpath(NewVersion),
-
+    CurrentPath = filename:join([?PATH, CurrentVersion, Node]),
+    NewPath = filename:join([?PATH, NewVersion, Node]),
     Commands = [
-        io_lib:format("cp -p -P -R \"~s/dev/dev~b/data\" \"~s/dev/dev~b\"",
-                       [OldPath, N, NewPath, N]),
-        io_lib:format("rm -rf ~s/dev/dev~b/data/*",
-                       [OldPath, N]),
-        io_lib:format("cp -p -P -R \"~s/dev/dev~b/etc\" \"~s/dev/dev~b\"",
-                       [OldPath, N, NewPath, N])
+        io_lib:format("cp -p -P -R \"~s\" \"~s\"",
+                       [filename:join(CurrentPath, "data"),
+                        NewPath]),
+        %% io_lib:format("rm -rf ~s/dev/dev~b/data/*",
+        %%                [CurrePath, N]),
+        io_lib:format("cp -p -P -R \"~s\" \"~s\"",
+                       [filename:join(CurrentPath, "etc"),
+                        NewPath])
     ],
-    [ begin
-        lager:info("Running: ~s", [Cmd]),
-        os:cmd(Cmd)
-    end || Cmd <- Commands],
-    VersionMap = orddict:store(N, NewVersion, rt_config:get(rt_versions)),
-    rt_config:set(rt_versions, VersionMap),
+    [begin
+         lager:debug("Running: ~s", [Cmd]),
+         os:cmd(Cmd)
+     end || Cmd <- Commands],
+    clean_data_dir(Node, CurrentVersion, ""),
+
+    %% VersionMap = orddict:store(N, NewVersion, rt_config:get(rt_versions)),
+    %% rt_config:set(rt_versions, VersionMap),
+
     case Config of
         same -> ok;
-        _ -> update_app_config(Node, Config)
+        _ -> update_app_config(Node, NewVersion, Config)
     end,
-    start(Node),
+    start(Node, NewVersion),
     rt:wait_until_pingable(Node),
     ok.
 
@@ -385,8 +390,31 @@ clean_data_dir(Nodes, SubDir) when is_list(Nodes) ->
     DataDirs = [node_path(Node) ++ "/data/" ++ SubDir || Node <- Nodes],
     lists:foreach(fun rm_dir/1, DataDirs).
 
+%% Blocking to delete files is not the best use of time. Generally it
+%% is quicker to move directories than to recursively delete them so
+%% move the directory to a GC subdirectory in the riak_test scratch
+%% directory, recreate the subdirectory, and asynchronously remove the
+%% files from the scratch directory.
+clean_data_dir(Node, Version, SubDir) ->
+    DataDir = filename:join([?PATH, Version, Node, "data", SubDir]),
+    TmpDir = filename:join([?SCRATCH_DIR, "gc", Version, Node, "data", SubDir]),
+    mv_dir(DataDir, TmpDir),
+    Pid = spawn(?MODULE, rm_dir, TmpDir),
+    mk_dir(DataDir),
+    Pid.
+
+mk_dir(Dir) ->
+    lager:debug("Making directory ~s", [Dir]),
+    ?assertCmd("mkdir " ++ Dir),
+    ?assertEqual(true, filelib:is_dir(Dir)).
+
+mv_dir(Src, Dest) ->
+    lager:debug("Moving directory ~s to ~s", [Src, Dest]),
+    ?assertCmd("mv " ++ Src ++ " " ++ Dest),
+    ?assertEqual(false, filelib:is_dir(Src)).
+
 rm_dir(Dir) ->
-    lager:info("Removing directory ~s", [Dir]),
+    lager:debug("Removing directory ~s", [Dir]),
     ?assertCmd("rm -rf " ++ Dir),
     ?assertEqual(false, filelib:is_dir(Dir)).
 
@@ -395,7 +423,7 @@ add_default_node_config(Nodes) ->
         undefined -> ok;
         Defaults when is_list(Defaults) ->
             rt:pmap(fun(Node) ->
-                            update_app_config(Node, Defaults)
+                            update_app_config(Node, version_here, Defaults)
                     end, Nodes),
             ok;
         BadValue ->
@@ -403,22 +431,23 @@ add_default_node_config(Nodes) ->
             throw({invalid_config, {rt_default_config, BadValue}})
     end.
 
-deploy_clusters(ClusterConfigs) ->
-    NumNodes = rt_config:get(num_nodes, 6),
-    RequestedNodes = lists:flatten(ClusterConfigs),
+deploy_clusters(_ClusterConfigs) ->
+    ok.
+%%     NumNodes = rt_config:get(num_nodes, 6),
+%%     RequestedNodes = lists:flatten(ClusterConfigs),
 
-    case length(RequestedNodes) > NumNodes of
-        true ->
-            erlang:error("Requested more nodes than available");
-        false ->
-            Nodes = deploy_nodes(RequestedNodes),
-            {DeployedClusters, _} = lists:foldl(
-                    fun(Cluster, {Clusters, RemNodes}) ->
-                        {A, B} = lists:split(length(Cluster), RemNodes),
-                        {Clusters ++ [A], B}
-                end, {[], Nodes}, ClusterConfigs),
-            DeployedClusters
-    end.
+%%     case length(RequestedNodes) > NumNodes of
+%%         true ->
+%%             erlang:error("Requested more nodes than available");
+%%         false ->
+%%             Nodes = deploy_nodes(RequestedNodes),
+%%             {DeployedClusters, _} = lists:foldl(
+%%                     fun(Cluster, {Clusters, RemNodes}) ->
+%%                         {A, B} = lists:split(length(Cluster), RemNodes),
+%%                         {Clusters ++ [A], B}
+%%                 end, {[], Nodes}, ClusterConfigs),
+%%             DeployedClusters
+%%     end.
 
 configure_nodes(Nodes, Configs) ->
     %% Set initial config
@@ -428,7 +457,7 @@ configure_nodes(Nodes, Configs) ->
                ({Node, {cuttlefish, Config}}) ->
                     set_conf(Node, Config);
                ({Node, Config}) ->
-                    update_app_config(Node, Config)
+                    update_app_config(Node, version_here, Config)
             end,
             lists:zip(Nodes, Configs)).
 
@@ -755,7 +784,7 @@ set_backend(Backend) ->
 set_backend(Backend, OtherOpts) ->
     lager:info("rtdev:set_backend(~p, ~p)", [Backend, OtherOpts]),
     Opts = [{storage_backend, Backend} | OtherOpts],
-    update_app_config(all, [{riak_kv, Opts}]),
+    update_app_config(all, version_here, [{riak_kv, Opts}]),
     get_backends().
 
 get_version() ->
@@ -767,7 +796,8 @@ get_version() ->
 teardown() ->
     rt_cover:maybe_stop_on_nodes(),
     %% Stop all discoverable nodes, not just nodes we'll be using for this test.
-    rt:pmap(fun(X) -> stop_all(X ++ "/dev") end, devpaths()).
+    %% rt:pmap(fun(X) -> stop_all(X ++ "/dev") end, devpaths()).
+    ok.
 
 whats_up() ->
     io:format("Here's what's running...~n"),
@@ -778,8 +808,8 @@ whats_up() ->
 devpaths() ->
     lists:usort([ DevPath || {_Name, DevPath} <- proplists:delete(root, rt_config:get(rtdev_path))]).
 
-versions() ->
-    proplists:get_keys(rt_config:get(rtdev_path)) -- [root].
+%% versions() ->
+%%     proplists:get_keys(rt_config:get(rtdev_path)) -- [root].
 
 get_node_logs() ->
     Root = filename:absname(proplists:get_value(root, ?PATH)),

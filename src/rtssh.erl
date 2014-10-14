@@ -154,7 +154,9 @@ node_to_host(Node) ->
 
 nodes(Count) ->
     Hosts = rt_config:get(rtssh_hosts),
-    NumNodes = length(NodeConfig),
+    %% NumNodes = length(NodeConfig),
+    NodeConfig = busted_stuff,
+    NumNodes = Count,
     NumHosts = length(Hosts),
     case NumNodes > NumHosts of
         true ->

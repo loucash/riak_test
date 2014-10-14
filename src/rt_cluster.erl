@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
- 3%% Copyright (c) 2014 Basho Technologies, Inc.
+%% Copyright (c) 2014 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -26,7 +26,7 @@
          augment_config/3,
          deploy_nodes/1,
          deploy_nodes/2,
-         deploy_nodes2/1,
+         %% deploy_nodes2/1,
          deploy_clusters/1,
          build_cluster/1,
          build_cluster/2,
@@ -44,18 +44,18 @@
 
 -include("rt.hrl").
 
--type node_index() :: non_neg_integer().
--type node_version() :: atom() | string().
--type node_config() :: default | term().
+%% -type node_index() :: non_neg_integer().
+%% -type node_version() :: atom() | string().
+%% -type node_config() :: default | term().
 
--record(test_node, {
-          index :: node_index(),
-          version :: node_version(),
-          config :: node_config(),
-          services=[riak_kv] :: list(atom()),
-          props=[] :: list(any())
-         }).
--type test_node() :: #test_node{}.
+%% -record(test_node, {
+%%           index :: node_index(),
+%%           version :: node_version(),
+%%           config :: node_config(),
+%%           services=[riak_kv] :: list(atom()),
+%%           props=[] :: list(any())
+%%          }).
+%% -type test_node() :: #test_node{}.
 
 %% @doc Default properties used if a riak_test module does not specify
 %% a custom properties function.
@@ -97,53 +97,53 @@ deploy_nodes(NumNodes) when is_integer(NumNodes) ->
     deploy_nodes([ current || _ <- lists:seq(1, NumNodes)]).
 
 
--spec deploy_nodes2(list(test_node())) -> [string()].
-deploy_nodes2(_NodeData) ->
-    NodeConfig = [rt_config:version_to_config(Version) ||
-                     Version <- Versions],
-    %% Nodes = rt_harness:deploy_nodes(NodeConfig),
+%% -spec deploy_nodes2(list(test_node())) -> [string()].
+%% deploy_nodes2(_NodeData) ->
+%%     NodeConfig = [rt_config:version_to_config(Version) ||
+%%                      Version <- Versions],
+%%     %% Nodes = rt_harness:deploy_nodes(NodeConfig),
 
-    Path = relpath(root),
-    lager:info("Riak path: ~p", [Path]),
-    %% TODO: NumNodes, NodesN, and Nodes should come from the
-    %% harnesses involved
-    %% rt_harness:nodes(length(NodeConfig)),
-    %% NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
-    %% {Versions, Configs} = lists:unzip(NodeConfig),
-    %% VersionMap = lists:zip(NodesN, Versions),
+%%     Path = relpath(root),
+%%     lager:info("Riak path: ~p", [Path]),
+%%     %% TODO: NumNodes, NodesN, and Nodes should come from the
+%%     %% harnesses involved
+%%     %% rt_harness:nodes(length(NodeConfig)),
+%%     %% NodeMap = orddict:from_list(lists:zip(Nodes, NodesN)),
+%%     %% {Versions, Configs} = lists:unzip(NodeConfig),
+%%     %% VersionMap = lists:zip(NodesN, Versions),
 
-    %% %% Check that you have the right versions available
-    %% [check_node(Version) || Version <- VersionMap],
-    %% rt_config:set(rt_nodes, NodeMap),
-    %% rt_config:set(rt_versions, VersionMap),
+%%     %% %% Check that you have the right versions available
+%%     %% [check_node(Version) || Version <- VersionMap],
+%%     %% rt_config:set(rt_nodes, NodeMap),
+%%     %% rt_config:set(rt_versions, VersionMap),
 
-    %% create_dirs(Nodes),
-    %% Perform harness-specific configuration
-    rt_harness:configure_nodes(Nodes, Configs),
+%%     %% create_dirs(Nodes),
+%%     %% Perform harness-specific configuration
+%%     rt_harness:configure_nodes(Nodes, Configs),
 
-    %% Start nodes
-    rt:pmap(fun rt_node:start/1, Nodes),
+%%     %% Start nodes
+%%     rt:pmap(fun rt_node:start/1, Nodes),
 
-    %% Ensure nodes started
-    [ok = rt:wait_until_pingable(N) || N <- Nodes],
+%%     %% Ensure nodes started
+%%     [ok = rt:wait_until_pingable(N) || N <- Nodes],
 
-    %% %% Enable debug logging
-    %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
+%%     %% %% Enable debug logging
+%%     %% [rpc:call(N, lager, set_loglevel, [lager_console_backend, debug]) || N <- Nodes],
 
-    %% We have to make sure that riak_core_ring_manager is running before we can go on.
-    [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
+%%     %% We have to make sure that riak_core_ring_manager is running before we can go on.
+%%     [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
 
-    %% Ensure nodes are singleton clusters
-    [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
-                                              Version /= "0.14.2"],
+%%     %% Ensure nodes are singleton clusters
+%%     [ok = rt_ring:check_singleton_node(?DEV(N)) || {N, Version} <- VersionMap,
+%%                                               Version /= "0.14.2"],
 
-    lager:info("Deployed nodes: ~p", [Nodes]),
+%%     lager:info("Deployed nodes: ~p", [Nodes]),
 
-    %% Wait for services to start
-    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
-    [ ok = rt:wait_for_service(Node, Service) || Node <- Nodes,
-                                              Service <- Services ],
-    Nodes.
+%%     %% Wait for services to start
+%%     lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
+%%     [ ok = rt:wait_for_service(Node, Service) || Node <- Nodes,
+%%                                               Service <- Services ],
+%%     Nodes.
 
 %% @doc Deploy a set of freshly installed Riak nodes with the given
 %%      `InitialConfig', returning a list of the nodes deployed.

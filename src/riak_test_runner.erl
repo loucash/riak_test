@@ -80,7 +80,7 @@ stop() ->
 %% @doc Read the storage schedule and go to idle.
 %% compose_test_datum(Version, Project, undefined, undefined) ->
 init([TestModule, Backend, Properties]) ->
-    lager:info("DEBUG: Started riak_test_runnner with pid ~p", [self()]),
+    lager:debug("Started riak_test_runnner with pid ~p", [self()]),
     Project = list_to_binary(rt_config:get(rt_project, "undefined")),
     MetaData = [{id, -1},
                 {platform, <<"local">>},
