@@ -21,21 +21,9 @@
         }).
 
 -define(Conf,
-        [
-         {riak_core,
-          [
-           {ring_creation_size, 8}
-          ]},
-         {riak_repl,
-          [
-           {realtime_connection_rebalance_max_delay_secs, 1},
-           {fullsync_strategy, aae},
-           {fullsync_on_connect, false},
-           {fullsync_interval, disabled}
-          ]}
+        [{riak_repl,
+          [{realtime_connection_rebalance_max_delay_secs, 1}]}
         ]).
-
--define(NUM_TESTS, 5).
 
 -define(SizeA, 4).
 -define(SizeB, 4).
@@ -64,7 +52,7 @@ cluster_B() ->
 %% ====================================================================
 
 prop_connection_balance() ->
-    ?FORALL(Cmds, more_commands(50, commands(?MODULE)),
+    ?FORALL(Cmds, commands(?MODULE),
             begin
                 run_commands(?MODULE, Cmds),
                 true
