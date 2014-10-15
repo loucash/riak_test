@@ -87,24 +87,27 @@ terminate(_Reason, _StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
-
 %%% Asynchronous call handling functions for each FSM state
 
+%% TODO: Modify property gathering to account for `upgrade_path'
+%% specified via the command line and replace accordingly in
+%% properties record.
 gather_properties(timeout, State) ->
-    Properties = test_properties(State#state.pending_tests),
+    OverrideProps = override_props(State),
+    Properties = test_properties(State#state.pending_tests, OverrideProps),
     {next_state, request_nodes, State#state{test_properties=Properties}, 0};
 gather_properties(_Event, _State) ->
     {next_state, gather_properties, _State}.
 
 request_nodes(timeout, State) ->
     #state{pending_tests=[NextTest | _],
-           test_properties=PropertiesList,
-           upgrade_list=UpgradeList} = State,
+           test_properties=PropertiesList} = State,
     %% Find the properties for the next pending test
     {NextTest, TestProps} = lists:keyfind(NextTest, 1, PropertiesList),
     %% Send async request to node manager
+    VersionsToTest = versions_to_test(TestProps),
     node_manager:reserve_nodes(rt_properties:get(node_count, TestProps),
-                               UpgradeList,
+                               VersionsToTest,
                                reservation_notify_fun()),
     {next_state, launch_test, State};
 request_nodes({test_complete, Test, Pid, Results}, State) ->
@@ -122,6 +125,11 @@ request_nodes({test_complete, Test, Pid, Results}, State) ->
 request_nodes(_Event, _State) ->
     {next_state, request_nodes, _State}.
 
+launch_test(insufficient_versions_available, State) ->
+    #state{pending_tests=[HeadPending | RestPending]} = State,
+    report_results(HeadPending, {skipped, insufficient_versions}, State),
+    UpdState = State#state{pending_tests=RestPending},
+    launch_test_transition(UpdState);
 launch_test(not_enough_nodes, State) ->
     %% Move head of pending to waiting and try next test if there is
     %% one left in pending.
@@ -220,12 +228,42 @@ reservation_notify_fun() ->
             ?MODULE:send_event(X)
     end.
 
-test_properties(Tests) ->
-    lists:foldl(fun test_property/2, [], Tests).
+test_properties(Tests, OverriddenProps) ->
+    lists:foldl(test_property_fun(OverriddenProps), [], Tests).
 
-test_property(TestModule, Acc) ->
-    {PropsMod, PropsFun} = riak_test_runner:function_name(properties,
-                                                          TestModule,
-                                                          0,
-                                                          rt_cluster),
-    [{TestModule, PropsMod:PropsFun()} | Acc].
+test_property_fun(OverrideProps) ->
+    fun(TestModule, Acc) ->
+            {PropsMod, PropsFun} = riak_test_runner:function_name(properties,
+                                                                  TestModule,
+                                                                  0,
+                                                                  rt_cluster),
+            Properties = rt_properties:set(OverrideProps, PropsMod:PropsFun()),
+            [{TestModule, Properties} | Acc]
+    end.
+
+versions_to_test(Properties) ->
+    versions_to_test(Properties, rt_properties:get(rolling_upgrade, Properties)).
+
+%% An `upgrade_path' specified on the command line overrides the test
+%% property setting. If the `rolling_upgrade' property is is `false'
+%% then the `start_version' property of the test is the only version
+%% tested.
+versions_to_test(Properties, true) ->
+    case rt_properties:get(upgrade_path, Properties) of
+        undefined ->
+            [rt_properties:get(start_version, Properties)];
+        UpgradePath ->
+            UpgradePath
+    end;
+versions_to_test(Properties, false) ->
+    [rt_properties:get(start_version, Properties)].
+
+%% Function to abstract away the details of what properties
+%% can be overridden on the command line.
+override_props(State) ->
+    case State#state.upgrade_list of
+        undefined ->
+            [];
+        UpgradeList ->
+            [{upgrade_path, UpgradeList}]
+    end.

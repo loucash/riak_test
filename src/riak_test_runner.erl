@@ -25,6 +25,7 @@
 
 %% API
 -export([start/3,
+         send_event/2,
          stop/0]).
 
 -export([function_name/2]).
@@ -33,10 +34,12 @@
 -export([init/1,
          setup/2,
          setup/3,
-         execution/2,
-         execution/3,
+         execute/2,
+         execute/3,
          wait_for_completion/2,
          wait_for_completion/3,
+         upgrade/2,
+         upgrade/3,
          handle_event/3,
          handle_sync_event/4,
          handle_info/3,
@@ -57,7 +60,10 @@
                 setup_modfun :: {atom(), atom()},
                 confirm_modfun :: {atom(), atom()},
                 backend_check :: atom(),
-                prereq_check :: atom()}).
+                prereq_check :: atom(),
+                current_verion :: string(),
+                remaining_versions :: [string()],
+                test_results :: [term()]}).
 
 %%%===================================================================
 %%% API
@@ -67,6 +73,9 @@
 start(TestModule, Backend, Properties) ->
     Args = [TestModule, Backend, Properties],
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
+
+send_event(Pid, Msg) ->
+    gen_fsm:send_event(Pid, Msg).
 
 %% @doc Stop the executor
 -spec stop() -> ok | {error, term()}.
@@ -87,11 +96,20 @@ init([TestModule, Backend, Properties]) ->
                 {version, rt:get_version()},
                 {project, Project}],
     TestTimeout = rt_config:get(test_timeout, rt_config:get(rt_max_wait_time)),
+    SetupModFun = function_name(setup, TestModule, 2, rt_cluster),
+    {ConfirmMod, _} = ConfirmModFun = function_name(confirm, TestModule),
+    BackendCheck = check_backend(Backend,
+                                 rt_properties:get(valid_backends, Properties)),
+    PreReqCheck = check_prereqs(ConfirmMod),
     State = #state{test_module=TestModule,
                    properties=Properties,
                    metadata=MetaData,
                    backend=Backend,
                    test_timeout=TestTimeout,
+                   setup_modfun=SetupModFun,
+                   confirm_modfun=ConfirmModFun,
+                   backend_check=BackendCheck,
+                   prereq_check=PreReqCheck,
                    group_leader=group_leader()},
     {ok, setup, State, 0}.
 
@@ -118,37 +136,34 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 %% Asynchronous call handling functions for each FSM state
 
-setup(timeout, State=#state{test_module=TestModule,
-                            backend=Backend,
+setup(timeout, State=#state{backend_check=false}) ->
+    notify_executor({skipped, invalid_backend}, State),
+    cleanup(State),
+    {stop, normal, State};
+setup(timeout, State=#state{prereq_check=false}) ->
+    notify_executor({fail, prereq_check_failed}, State),
+    cleanup(State),
+    {stop, normal, State};
+setup(timeout, State=#state{backend=Backend,
                             properties=Properties}) ->
     NewGroupLeader = riak_test_group_leader:new_group_leader(self()),
     group_leader(NewGroupLeader, self()),
 
     {0, UName} = rt:cmd("uname -a"),
     lager:info("Test Runner `uname -a` : ~s", [UName]),
-    SetupModFun = function_name(setup, TestModule, 2, rt_cluster),
-    {ConfirmMod, _} = ConfirmModFun = function_name(confirm, TestModule),
-    BackendCheck = check_backend(Backend,
-                                 rt_properties:get(valid_backends, Properties)),
-    PreReqCheck = check_prereqs(ConfirmMod),
 
-    UpdState = State#state{setup_modfun=SetupModFun,
-                           confirm_modfun=ConfirmModFun,
-                           backend_check=BackendCheck,
-                           prereq_check=PreReqCheck},
-    {next_state, execution, UpdState, 0};
+    Nodes = rt_properties:get(nodes, Properties),
+    StartVersion = rt_properties:get(start_version, Properties),
+    Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
+    node_manager:deploy_nodes(Nodes,
+                              StartVersion,
+                              Config,
+                              node_deploy_notify_fun()),
+    {next_state, execute, State};
 setup(_Event, _State) ->
     ok.
 
-execution(timeout, State=#state{backend_check=false}) ->
-    notify_executor({skipped, invalid_backend}, State),
-    cleanup(State),
-    {stop, normal, State};
-execution(timeout, State=#state{prereq_check=false}) ->
-    notify_executor({fail, prereq_check_failed}, State),
-    cleanup(State),
-    {stop, normal, State};
-execution(timeout, State) ->
+execute({nodes_deployed, _}, State) ->
     #state{test_module=TestModule,
            properties=Properties,
            setup_modfun=SetupModFun,
@@ -165,8 +180,8 @@ execution(timeout, State) ->
     UpdState =  State#state{execution_pid=Pid,
                             start_time=StartTime},
     {next_state, wait_for_completion, UpdState, TestTimeout};
-execution(_Event, _State) ->
-    {next_state, execution, _State}.
+execute(_Event, _State) ->
+    {next_state, execute, _State}.
 
 wait_for_completion(timeout, State) ->
     %% Test timed out
@@ -180,28 +195,21 @@ wait_for_completion({test_result, Result}, State) ->
 wait_for_completion(_Msg, _State) ->
     {next_state, wait_for_completion, _State}.
 
-cleanup(#state{group_leader=OldGroupLeader}) ->
-    riak_test_group_leader:tidy_up(OldGroupLeader).
-
-notify_executor(timeout, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), {fail, timeout}},
-    riak_test_executor:send_event(Notification);
-notify_executor(pass, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), pass},
-    riak_test_executor:send_event(Notification);
-notify_executor(FailResult, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), FailResult},
-    riak_test_executor:send_event(Notification).
+upgrade(_Event, _State) ->
+    {next_state, upgrade, _State}.
 
 %% Synchronous call handling functions for each FSM state
 
 setup(_Event, _From, _State) ->
     ok.
 
-execution(_Event, _From, _State) ->
+execute(_Event, _From, _State) ->
     ok.
 
 wait_for_completion(_Event, _From, _State) ->
+    ok.
+
+upgrade(_Event, _From, _State) ->
     ok.
 
 %%%===================================================================
@@ -389,17 +397,21 @@ check_prereqs(Module) ->
     lists:all(fun({_, Present}) -> Present end, P2).
 
 
+node_deploy_notify_fun() ->
+    fun(X) ->
+            ?MODULE:send_event(self(), X)
+    end.
 
-%% -spec(metadata() -> [{atom(), term()}]).
-%% @doc fetches test metadata from spawned test process
-%% metadata() ->
-%%     riak_test ! metadata,
-%%     receive
-%%         {metadata, TestMeta} -> TestMeta
-%%     end.
 
-%% metadata(Pid) ->
-%%     riak_test ! {metadata, Pid},
-%%     receive
-%%         {metadata, TestMeta} -> TestMeta
-%%     end.
+cleanup(#state{group_leader=OldGroupLeader}) ->
+    riak_test_group_leader:tidy_up(OldGroupLeader).
+
+notify_executor(timeout, #state{test_module=Test}) ->
+    Notification = {test_complete, Test, self(), {fail, timeout}},
+    riak_test_executor:send_event(Notification);
+notify_executor(pass, #state{test_module=Test}) ->
+    Notification = {test_complete, Test, self(), pass},
+    riak_test_executor:send_event(Notification);
+notify_executor(FailResult, #state{test_module=Test}) ->
+    Notification = {test_complete, Test, self(), FailResult},
+    riak_test_executor:send_event(Notification).

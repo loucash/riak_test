@@ -32,8 +32,8 @@
           metadata=[] :: proplists:proplist(),
           properties=[] :: proplists:proplist(),
           rolling_upgrade=false :: boolean(),
-          start_version=current :: atom(),
-          upgrade_version=current :: atom(),
+          start_version=head :: atom(),
+          upgrade_path :: [string()],
           wait_for_transfers=false :: boolean(),
           valid_backends=all :: all | [atom()],
           make_cluster=true :: boolean(),
@@ -192,8 +192,8 @@ field_index(rolling_upgrade) ->
     ?RT_PROPERTIES.rolling_upgrade;
 field_index(start_version) ->
     ?RT_PROPERTIES.start_version;
-field_index(upgrade_version) ->
-    ?RT_PROPERTIES.upgrade_version;
+field_index(upgrade_path) ->
+    ?RT_PROPERTIES.upgrade_path;
 field_index(wait_for_transfers) ->
     ?RT_PROPERTIES.wait_for_transfers;
 field_index(valid_backends) ->

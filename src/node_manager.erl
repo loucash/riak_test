@@ -3,8 +3,9 @@
 -behavior(gen_server).
 
 %% API
--export([start_link/4,
-         reserve_nodes/4,
+-export([start_link/2,
+         reserve_nodes/3,
+         deploy_nodes/4,
          return_nodes/1,
          status/0,
          stop/0]).
@@ -27,13 +28,17 @@
 %%% API
 %%%===================================================================
 
-start_link(Nodes, VersionMap, DefaultVersion, UpgradePath) ->
-    Args = [Nodes, VersionMap, DefaultVersion, UpgradePath],
+start_link(Nodes, VersionMap) ->
+    Args = [Nodes, VersionMap],
     gen_server:start_link({local, ?MODULE}, Args, []).
 
--spec reserve_nodes(pos_integer(), [string()], term(), function()) -> ok.
-reserve_nodes(NodeCount, Versions, Config, NotifyFun) ->
-    gen_server:cast(?MODULE, {reserve_nodes, NodeCount, Versions, Config, NotifyFun}).
+-spec reserve_nodes(pos_integer(), [string()], function()) -> ok.
+reserve_nodes(NodeCount, Versions, NotifyFun) ->
+    gen_server:cast(?MODULE, {reserve_nodes, NodeCount, Versions, NotifyFun}).
+
+-spec deploy_nodes([string()], string(), term(), function()) -> ok.
+deploy_nodes(Nodes, Version, Config, NotifyFun) ->
+  gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, NotifyFun}).
 
 -spec return_nodes([string()]) -> ok.
 return_nodes(Nodes) ->
@@ -52,17 +57,10 @@ stop() ->
 %%%===================================================================
 
 %% Initial node deployment is deferred until the first call to
-init([Nodes, VersionMap, DefaultVersion, undefined]) ->
+init([Nodes, VersionMap]) ->
     SortedNodes = lists:sort(Nodes),
     {ok, #state{nodes=SortedNodes,
                 nodes_available=SortedNodes,
-                initial_version=DefaultVersion,
-                version_map=VersionMap}};
-init([Nodes, VersionMap, _, [InitialVersion | _]]) ->
-    SortedNodes = lists:sort(Nodes),
-    {ok, #state{nodes=SortedNodes,
-                nodes_available=SortedNodes,
-                initial_version=InitialVersion,
                 version_map=VersionMap}}.
 
 handle_call(status, _From, State) ->
@@ -73,15 +71,20 @@ handle_call(status, _From, State) ->
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.
 
-handle_cast({reserve_nodes, Count, Versions, Config, NotifyFun}, State) ->
+handle_cast({reserve_nodes, Count, Versions, NotifyFun}, State) ->
     {Result, UpdState} =
-        reserve(Count, Versions, Config, State),
+        reserve(Count, Versions, State),
     NotifyFun(Result),
     {noreply, UpdState};
+handle_cast({deploy_nodes, Nodes, Version, Config, NotifyFun}, State) ->
+    %% {Result, UpdState} =
+    %%     reserve(Count, Versions, State),
+    Result = deploy_nodes(Nodes, Version, Config),
+    NotifyFun({nodes_deployed, Result}),
+    {noreply, State};
 handle_cast({return_nodes, Nodes}, State) ->
-    %% Stop nodes, clean data dirs, and restart
-    %% so they are ready for next use.
-    [stop_clean_start(Node, State#state.initial_version) || Node <- Nodes],
+    %% Stop nodes and clean data dirs so they are ready for next use.
+    [stop_and_clean(Node, State#state.initial_version) || Node <- Nodes],
     NodesAvailable = State#state.nodes_available,
     NodesNowAvailable = lists:merge(lists:sort(Nodes), NodesAvailable),
     {noreply, State#state{nodes_available=NodesNowAvailable}};
@@ -107,46 +110,66 @@ stop_and_clean(Node, Version) ->
     rt_node:stop_and_wait(Node),
     rt_node:clean_data_dir(Node, Version).
 
-stop_clean_start(Node, Version) ->
-    stop_and_clean(Node, Version),
-    rt_node:start(Node, Version).
+%% stop_clean_start(Node, Version) ->
+%%     stop_and_clean(Node, Version),
+%%     rt_node:start(Node, Version).
 
-%% TODO: Circle back to add version checking after get
-%% basic test execution functioning
-reserve(Count, _Versions, _Config, State=#state{nodes_available=NodesAvailable})
+reserve(Count, _Versions, State=#state{nodes_available=NodesAvailable})
   when Count > length(NodesAvailable) ->
     {not_enough_nodes, State};
-reserve(Count, _Versions, Config, State=#state{nodes_available=NodesAvailable,
-                                               nodes_deployed=NodesDeployed,
-                                               initial_version=InitialVersion})
+reserve(Count, Versions, State=#state{nodes_available=NodesAvailable,
+                                      nodes_deployed=NodesDeployed,
+                                      version_map=VersionMap})
   when Count =:= length(NodesAvailable) ->
-    UpdNodesDeployed = maybe_deploy_nodes(NodesAvailable,
-                                          {NodesDeployed,
-                                           Config,
-                                           InitialVersion}),
-    UpdState = State#state{nodes_available=[],
-                           nodes_deployed=UpdNodesDeployed},
-    {NodesAvailable, UpdState};
-reserve(Count, _Versions, Config, State=#state{nodes_available=NodesAvailable,
-                                               nodes_deployed=NodesDeployed,
-                                               initial_version=InitialVersion}) ->
-    {Reserved, UpdNodesAvailable} = lists:split(Count, NodesAvailable),
-    UpdNodesDeployed = maybe_deploy_nodes(Reserved,
-                                          {NodesDeployed,
-                                           Config,
-                                           InitialVersion}),
-    UpdState = State#state{nodes_available=UpdNodesAvailable,
-                           nodes_deployed=UpdNodesDeployed},
-    {Reserved, UpdState}.
+        case versions_available(Count, Versions, VersionMap) of
+            true ->
+                UpdNodesDeployed = lists:sort(NodesDeployed ++ NodesAvailable),
+                {NodesAvailable, State#state{nodes_available=[],
+                                             nodes_deployed=UpdNodesDeployed}};
+            false ->
+                {insufficient_versions_available, State}
+        end;
+reserve(Count, Versions, State=#state{nodes_available=NodesAvailable,
+                                      nodes_deployed=NodesDeployed,
+                                      version_map=VersionMap}) ->
+        case versions_available(Count, Versions, VersionMap) of
+            true ->
+                {Reserved, UpdNodesAvailable} = lists:split(Count, NodesAvailable),
+                UpdNodesDeployed = lists:sort(NodesDeployed ++ Reserved),
+                UpdState = State#state{nodes_available=UpdNodesAvailable,
+                                       nodes_deployed=UpdNodesDeployed},
+                {Reserved, UpdState};
+            false ->
+                {insufficient_versions_available, State}
+        end.
 
-maybe_deploy_nodes(Nodes, {Nodes, _, _}) ->
-    %% All nodes already deployed, move along
-    Nodes;
-maybe_deploy_nodes(Requested, {Deployed, Version, Config}) ->
-    case Deployed -- Requested of
-        [] ->
-            Deployed;
-        NodesToDeploy ->
-            _ = rt_harness_util:deploy_nodes(NodesToDeploy, Version, Config),
-            lists:sort(Deployed ++ NodesToDeploy)
+versions_available(Count, Versions, VersionMap) ->
+    lists:all(version_available_fun(Count, VersionMap), Versions).
+
+version_available_fun(Count, VersionMap) ->
+    fun(Version) ->
+            case lists:keyfind(Version, 1, VersionMap) of
+                {Version, VersionNodes} when length(VersionNodes) >= Count ->
+                    true;
+                {Version, _} ->
+                    false;
+                false ->
+                    false
+            end
     end.
+
+deploy_nodes(Nodes, Version, Config) ->
+    rt_harness_util:deploy_nodes(Nodes, Version, Config).
+
+
+%% maybe_deploy_nodes(Nodes, {Nodes, _, _}) ->
+%%     %% All nodes already deployed, move along
+%%     Nodes;
+%% maybe_deploy_nodes(Requested, {Deployed, Version, Config}) ->
+%%     case Deployed -- Requested of
+%%         [] ->
+%%             Deployed;
+%%         NodesToDeploy ->
+%%             _ = rt_harness_util:deploy_nodes(NodesToDeploy, Version, Config),
+%%             lists:sort(Deployed ++ NodesToDeploy)
+%%     end.
