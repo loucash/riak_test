@@ -6,6 +6,7 @@
 -export([start_link/2,
          reserve_nodes/3,
          deploy_nodes/4,
+         upgrade_nodes/5,
          return_nodes/1,
          status/0,
          stop/0]).
@@ -39,6 +40,10 @@ reserve_nodes(NodeCount, Versions, NotifyFun) ->
 -spec deploy_nodes([string()], string(), term(), function()) -> ok.
 deploy_nodes(Nodes, Version, Config, NotifyFun) ->
   gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, NotifyFun}).
+
+-spec upgrade_nodes([string()], string(), string(), term(), function()) -> ok.
+upgrade_nodes(Nodes, CurrentVersion, NewVersion, Config, NotifyFun) ->
+  gen_server:cast(?MODULE, {deploy_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}).
 
 -spec return_nodes([string()]) -> ok.
 return_nodes(Nodes) ->
@@ -77,10 +82,12 @@ handle_cast({reserve_nodes, Count, Versions, NotifyFun}, State) ->
     NotifyFun(Result),
     {noreply, UpdState};
 handle_cast({deploy_nodes, Nodes, Version, Config, NotifyFun}, State) ->
-    %% {Result, UpdState} =
-    %%     reserve(Count, Versions, State),
-    Result = deploy_nodes(Nodes, Version, Config),
+    Result = deploy(Nodes, Version, Config),
     NotifyFun({nodes_deployed, Result}),
+    {noreply, State};
+handle_cast({upgrade_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}, State) ->
+    Result = upgrade(Nodes, CurrentVersion, NewVersion, Config),
+    NotifyFun({nodes_upgraded, Result}),
     {noreply, State};
 handle_cast({return_nodes, Nodes}, State) ->
     %% Stop nodes and clean data dirs so they are ready for next use.
@@ -158,9 +165,12 @@ version_available_fun(Count, VersionMap) ->
             end
     end.
 
-deploy_nodes(Nodes, Version, Config) ->
+deploy(Nodes, Version, Config) ->
     rt_harness_util:deploy_nodes(Nodes, Version, Config).
 
+upgrade(Nodes, CurrentVersion, NewVersion, Config) ->
+    [rt_node:upgrade(Node, CurrentVersion, NewVersion, Config) ||
+        Node <- Nodes].
 
 %% maybe_deploy_nodes(Nodes, {Nodes, _, _}) ->
 %%     %% All nodes already deployed, move along

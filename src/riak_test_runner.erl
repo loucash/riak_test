@@ -38,8 +38,8 @@
          execute/3,
          wait_for_completion/2,
          wait_for_completion/3,
-         upgrade/2,
-         upgrade/3,
+         wait_for_upgrade/2,
+         wait_for_upgrade/3,
          handle_event/3,
          handle_sync_event/4,
          handle_info/3,
@@ -61,7 +61,7 @@
                 confirm_modfun :: {atom(), atom()},
                 backend_check :: atom(),
                 prereq_check :: atom(),
-                current_verion :: string(),
+                current_version :: string(),
                 remaining_versions :: [string()],
                 test_results :: [term()]}).
 
@@ -153,50 +153,100 @@ setup(timeout, State=#state{backend=Backend,
     lager:info("Test Runner `uname -a` : ~s", [UName]),
 
     Nodes = rt_properties:get(nodes, Properties),
-    StartVersion = rt_properties:get(start_version, Properties),
+    {StartVersion, OtherVersions} = test_versions(Properties),
     Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
     node_manager:deploy_nodes(Nodes,
                               StartVersion,
                               Config,
-                              node_deploy_notify_fun()),
-    {next_state, execute, State};
+                              notify_fun()),
+    UpdState = State#state{current_version=StartVersion,
+                           remaining_versions=OtherVersions},
+    {next_state, execute, UpdState};
 setup(_Event, _State) ->
     ok.
 
 execute({nodes_deployed, _}, State) ->
     #state{test_module=TestModule,
            properties=Properties,
-           setup_modfun=SetupModFun,
+           setup_modfun={SetupMod, SetupFun},
            confirm_modfun=ConfirmModFun,
            metadata=MetaData,
            test_timeout=TestTimeout} = State,
     lager:notice("Running Test ~s", [TestModule]),
 
     StartTime = os:timestamp(),
-    Pid = spawn_link(test_fun(Properties,
-                              SetupModFun,
-                              ConfirmModFun,
-                              MetaData)),
-    UpdState =  State#state{execution_pid=Pid,
-                            start_time=StartTime},
+    %% Perform test setup which includes clustering of the nodes if
+    %% required by the test properties. The cluster information is placed
+    %% into the properties record and returned by the `setup' function.
+    UpdState =
+        case SetupMod:SetupFun(Properties, MetaData) of
+            {ok, UpdProperties} ->
+                Pid = spawn_link(test_fun(UpdProperties,
+                                          ConfirmModFun,
+                                          MetaData)),
+                State#state{execution_pid=Pid,
+                            properties=UpdProperties,
+                            start_time=StartTime};
+            _ ->
+                ?MODULE:send_event(self(), test_result({fail, test_setup_failed})),
+                State#state{start_time=StartTime}
+        end,
     {next_state, wait_for_completion, UpdState, TestTimeout};
 execute(_Event, _State) ->
     {next_state, execute, _State}.
+
+%% Simple function to hide the details of the message wrapping
+test_result(Result) ->
+    {test_result, Result}.
 
 wait_for_completion(timeout, State) ->
     %% Test timed out
     notify_executor(timeout, State),
     cleanup(State),
     {stop, normal, State};
-wait_for_completion({test_result, Result}, State) ->
+wait_for_completion({test_result, Result}, State=#state{remaining_versions=[]}) ->
+    %% TODO: Format results for aggregate test runs if needed. For
+    %% upgrade tests with failure return which versions had failure
+    %% along with reasons.
+    %% TODO: Calculate test duration and include with results reported
+    %% to executor
+    _EndTime = os:timestamp(),
     notify_executor(Result, State),
     cleanup(State),
     {stop, normal, State};
+wait_for_completion({test_result, Result}, State) ->
+    #state{backend=Backend,
+           test_results=TestResults,
+           current_version=CurrentVersion,
+           remaining_versions=[NextVersion | RestVersions],
+           properties=Properties} = State,
+    Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
+    Nodes = rt_properties:get(nodes, Properties),
+    %% TODO: Verify this is needed
+    ensure_all_nodes_running(Nodes),
+    node_manager:upgrade_nodes(Nodes, CurrentVersion, NextVersion, Config, notify_fun()),
+    UpdState = State#state{test_results=[Result | TestResults],
+                           current_version=NextVersion,
+                           remaining_versions=RestVersions},
+    {next_state, upgrade, UpdState};
 wait_for_completion(_Msg, _State) ->
     {next_state, wait_for_completion, _State}.
 
-upgrade(_Event, _State) ->
-    {next_state, upgrade, _State}.
+wait_for_upgrade(nodes_upgraded, State) ->
+    #state{properties=Properties,
+           confirm_modfun=ConfirmModFun,
+           metadata=MetaData,
+           test_timeout=TestTimeout} = State,
+
+    %% TODO: Maybe wait for transfers. Probably should be
+    %% a call to an exported function in `rt_cluster'
+    Pid = spawn_link(test_fun(Properties,
+                              ConfirmModFun,
+                              MetaData)),
+    UpdState = State#state{execution_pid=Pid},
+    {next_state, wait_for_completion, UpdState, TestTimeout};
+wait_for_upgrade(_Event, _State) ->
+    {next_state, wait_for_upgrade, _State}.
 
 %% Synchronous call handling functions for each FSM state
 
@@ -209,48 +259,39 @@ execute(_Event, _From, _State) ->
 wait_for_completion(_Event, _From, _State) ->
     ok.
 
-upgrade(_Event, _From, _State) ->
+wait_for_upgrade(_Event, _From, _State) ->
     ok.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
--spec test_fun(term(), {atom(), atom()}, {atom(), atom()}, proplists:proplist()) -> function().
-test_fun(Properties, {SetupMod, SetupFun}, ConfirmModFun, MetaData) ->
+-spec test_fun(rt_properties:properties(), {atom(), atom()}, proplists:proplist()) ->
+                      function().
+test_fun(Properties, {ConfirmMod, ConfirmFun}, MetaData) ->
     fun() ->
-            case SetupMod:SetupFun(Properties, MetaData) of
-                {ok, SetupData} ->
-                    RollingUpgradeTest = rt_properties:get(rolling_upgrade, SetupData),
-                    ConfirmFun = compose_confirm_fun(ConfirmModFun,
-                                                     SetupData,
-                                                     MetaData,
-                                                     RollingUpgradeTest),
-
-                    gen_fsm:send_event(self(), ConfirmFun());
-                _ ->
-                    gen_fsm:send_event(self(), {fail, test_setup_failed})
-            end
+            TestResult = ConfirmMod:ConfirmFun(Properties, MetaData),
+            ?MODULE:send_event(self(), test_result(TestResult))
     end.
 
-compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, true) ->
-    Nodes = rt_properties:get(nodes, SetupData),
-    WaitForTransfers = rt_properties:get(wait_for_transfers, SetupData),
-    UpgradeVersion = rt_properties:get(upgrade_version, SetupData),
-    fun() ->
-            InitialResult = ConfirmMod:ConfirmFun(SetupData, MetaData),
-            OtherResults = [begin
-                                ensure_all_nodes_running(Nodes),
-                                _ = rt_node:upgrade(Node, UpgradeVersion),
-                                _ = rt_cluster:maybe_wait_for_transfers(Nodes, WaitForTransfers),
-                                ConfirmMod:ConfirmFun(SetupData, MetaData)
-                            end || Node <- Nodes],
-            lists:all(fun(R) -> R =:= pass end, [InitialResult | OtherResults])
-    end;
-compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, false) ->
-    fun() ->
-            ConfirmMod:ConfirmFun(SetupData, MetaData)
-    end.
+%% compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, true) ->
+%%     Nodes = rt_properties:get(nodes, SetupData),
+%%     WaitForTransfers = rt_properties:get(wait_for_transfers, SetupData),
+%%     UpgradeVersion = rt_properties:get(upgrade_version, SetupData),
+%%     fun() ->
+%%             InitialResult = ConfirmMod:ConfirmFun(SetupData, MetaData),
+%%             OtherResults = [begin
+%%                                 ensure_all_nodes_running(Nodes),
+%%                                 _ = rt_node:upgrade(Node, UpgradeVersion),
+%%                                 _ = rt_cluster:maybe_wait_for_transfers(Nodes, WaitForTransfers),
+%%                                 ConfirmMod:ConfirmFun(SetupData, MetaData)
+%%                             end || Node <- Nodes],
+%%             lists:all(fun(R) -> R =:= pass end, [InitialResult | OtherResults])
+%%     end;
+%% compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, false) ->
+%%     fun() ->
+%%             ConfirmMod:ConfirmFun(SetupData, MetaData)
+%%     end.
 
 ensure_all_nodes_running(Nodes) ->
     [begin
@@ -396,8 +437,7 @@ check_prereqs(Module) ->
                    [Module, P]) || {P, false} <- P2],
     lists:all(fun({_, Present}) -> Present end, P2).
 
-
-node_deploy_notify_fun() ->
+notify_fun() ->
     fun(X) ->
             ?MODULE:send_event(self(), X)
     end.
@@ -415,3 +455,16 @@ notify_executor(pass, #state{test_module=Test}) ->
 notify_executor(FailResult, #state{test_module=Test}) ->
     Notification = {test_complete, Test, self(), FailResult},
     riak_test_executor:send_event(Notification).
+
+test_versions(Properties) ->
+    StartVersion = rt_properties:get(start_version, Properties),
+    UpgradePath = rt_properties:get(upgrade_path, Properties),
+    case UpgradePath of
+        undefined ->
+            {StartVersion, []};
+        [] ->
+            {StartVersion, []};
+        _ ->
+            [UpgradeHead | Rest] = UpgradePath,
+            {UpgradeHead, Rest}
+    end.

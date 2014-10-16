@@ -28,7 +28,7 @@
 
 -record(rt_properties_v1, {
           nodes :: [node()],
-          node_count=6 :: non_neg_integer(),
+          node_count=3 :: non_neg_integer(),
           metadata=[] :: proplists:proplist(),
           properties=[] :: proplists:proplist(),
           rolling_upgrade=false :: boolean(),
@@ -39,6 +39,7 @@
           make_cluster=true :: boolean(),
           cluster_count=1 :: pos_integer(),
           cluster_weights :: [float()],
+          clusters :: proplists:proplist(),
           config=default_config() :: term()
          }).
 -type properties() :: #rt_properties_v1{}.

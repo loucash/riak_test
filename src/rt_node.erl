@@ -26,10 +26,9 @@
          async_start/1,
          stop/1,
          stop_and_wait/1,
-         upgrade/2,
-         upgrade/3,
+         upgrade/4,
          is_ready/1,
-         slow_upgrade/3,
+         %% slow_upgrade/3,
          join/2,
          staged_join/2,
          plan_and_commit/1,
@@ -76,29 +75,29 @@ stop_and_wait(Node) ->
     stop(Node),
     ?assertEqual(ok, rt:wait_until_unpingable(Node)).
 
-%% @doc Upgrade a Riak `Node' to the specified `NewVersion'.
-upgrade(Node, NewVersion) ->
-    rt_harness:upgrade(Node, NewVersion).
+%% %% @doc Upgrade a Riak `Node' to the specified `NewVersion'.
+%% upgrade(Node, NewVersion) ->
+%%     rt_harness:upgrade(Node, NewVersion).
 
 %% @doc Upgrade a Riak `Node' to the specified `NewVersion' and update
 %% the config based on entries in `Config'.
-upgrade(Node, NewVersion, Config) ->
-    rt_harness:upgrade(Node, NewVersion, Config).
+upgrade(Node, CurrentVersion, NewVersion, Config) ->
+    rt_harness:upgrade(Node, CurrentVersion, NewVersion, Config).
 
 %% @doc Upgrade a Riak node to a specific version using the alternate
 %%      leave/upgrade/rejoin approach
-slow_upgrade(Node, NewVersion, Nodes) ->
-    lager:info("Perform leave/upgrade/join upgrade on ~p", [Node]),
-    lager:info("Leaving ~p", [Node]),
-    leave(Node),
-    ?assertEqual(ok, rt:wait_until_unpingable(Node)),
-    upgrade(Node, NewVersion),
-    lager:info("Rejoin ~p", [Node]),
-    join(Node, hd(Nodes -- [Node])),
-    lager:info("Wait until all nodes are ready and there are no pending changes"),
-    ?assertEqual(ok, rt:wait_until_nodes_ready(Nodes)),
-    ?assertEqual(ok, rt:wait_until_no_pending_changes(Nodes)),
-    ok.
+%% slow_upgrade(Node, NewVersion, Nodes) ->
+%%     lager:info("Perform leave/upgrade/join upgrade on ~p", [Node]),
+%%     lager:info("Leaving ~p", [Node]),
+%%     leave(Node),
+%%     ?assertEqual(ok, rt:wait_until_unpingable(Node)),
+%%     upgrade(Node, NewVersion),
+%%     lager:info("Rejoin ~p", [Node]),
+%%     join(Node, hd(Nodes -- [Node])),
+%%     lager:info("Wait until all nodes are ready and there are no pending changes"),
+%%     ?assertEqual(ok, rt:wait_until_nodes_ready(Nodes)),
+%%     ?assertEqual(ok, rt:wait_until_no_pending_changes(Nodes)),
+%%     ok.
 
 %% @doc Have `Node' send a join request to `PNode'
 join(Node, PNode) ->

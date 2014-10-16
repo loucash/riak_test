@@ -186,8 +186,6 @@ relpath(_, _) ->
 %%     upgrade(Node, CurrentVersion, NewVersion, same).
 
 upgrade(Node, CurrentVersion, NewVersion, Config) ->
-    %% N = node_id(Node),
-    %% Version = node_version(N),
     lager:info("Upgrading ~p : ~p -> ~p", [Node, CurrentVersion, NewVersion]),
     stop(Node),
     rt:wait_until_unpingable(Node),
