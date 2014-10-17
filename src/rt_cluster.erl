@@ -24,14 +24,6 @@
 -export([properties/0,
          setup/2,
          augment_config/3,
-         deploy_nodes/1,
-         deploy_nodes/2,
-         %% deploy_nodes2/1,
-         deploy_clusters/1,
-         build_cluster/1,
-         build_cluster/2,
-         build_cluster/3,
-         build_clusters/1,
          clean_cluster/1,
          join_cluster/1,
          clean_data_dir/1,
@@ -44,19 +36,6 @@
 
 -include("rt.hrl").
 
-%% -type node_index() :: non_neg_integer().
-%% -type node_version() :: atom() | string().
-%% -type node_config() :: default | term().
-
-%% -record(test_node, {
-%%           index :: node_index(),
-%%           version :: node_version(),
-%%           config :: node_config(),
-%%           services=[riak_kv] :: list(atom()),
-%%           props=[] :: list(any())
-%%          }).
-%% -type test_node() :: #test_node{}.
-
 %% @doc Default properties used if a riak_test module does not specify
 %% a custom properties function.
 -spec properties() -> rt_properties:properties().
@@ -66,21 +45,7 @@ properties() ->
 -spec setup(rt_properties:properties(), proplists:proplist()) ->
                    {ok, rt_properties:properties()} | {error, term()}.
 setup(Properties, _MetaData) ->
-    rt_config:set_conf(all, [{"buckets.default.allow_mult", "false"}]),
-
-    %% RollingUpgrade =
-    %%     proplists:get_value(rolling_upgrade,
-    %%                         MetaData,
-    %%                         rt_properties:get(rolling_upgrade, Properties)),
-    %% Version = rt_properties:get(start_version, Properties),
-    %% Config = rt_properties:get(config, Properties),
-    %% Versions = [{Version, Config} ||
-    %%                _ <- lists:seq(1, rt_properties:get(node_count, Properties))],
-    %% Nodes = deploy_or_build_cluster(Versions,
-    %%                                 rt_properties:get(make_cluster, Properties)),
-
-    %% Divide the nodes into the requested number of clusters and join
-    %% the nodes if indicated by the test properties
+    %% rt_config:set_conf(all, [{"buckets.default.allow_mult", "false"}]),
     case form_clusters(Properties) of
         {ok, Clusters} ->
             maybe_wait_for_transfers(rt_properties:get(nodes, Properties),
@@ -91,7 +56,7 @@ setup(Properties, _MetaData) ->
     end.
 
 -type clusters() :: [{pos_integer(), [string()]}].
--spec form_clusters(rt_properties:propertie()) -> clusters().
+-spec form_clusters(rt_properties:properties()) -> clusters().
 form_clusters(Properties) ->
     Nodes = rt_properties:get(nodes, Properties),
     ClusterCount = rt_properties:get(cluster_count, Properties),
@@ -115,13 +80,16 @@ divide_nodes(Nodes, Count, Weights) ->
     case validate_weights(Weights) of
         true ->
             TotalNodes = length(Nodes),
-            _NodeCounts = node_counts_from_weights(TotalNodes, Count, Weights),
-            %% {_, Clusters} = lists:foldl(
-                %% {ok, Clusters};
-            ok;
+            NodeCounts = node_counts_from_weights(TotalNodes, Count, Weights),
+            {_, Clusters, _} = lists:foldl(fun take_nodes/2, {1, [], Nodes}, NodeCounts),
+                {ok, lists:reverse(Clusters)};
         false ->
             {error, invalid_cluster_weights}
     end.
+
+take_nodes(NodeCount, {Index, ClusterAcc, Nodes}) ->
+    {NewClusterNodes, RestNodes} = lists:split(NodeCount, Nodes),
+    {Index + 1, [{Index, NewClusterNodes} | ClusterAcc], RestNodes}.
 
 validate_weights(undefined) ->
     true;
@@ -136,8 +104,23 @@ node_counts_from_weights(NodeCount, ClusterCount, undefined) ->
     Remainder = NodeCount rem ClusterCount,
     [NodesPerCluster + remainder_to_apply(Remainder, ClusterIndex) ||
         ClusterIndex <- lists:seq(1, ClusterCount)];
-node_counts_from_weights(_NodeCount, _ClusterCount, _Weights) ->
-    ok.
+node_counts_from_weights(NodeCount, ClusterCount, Weights) ->
+    InitialNodeCounts = [node_count_from_weight(NodeCount, Weight) || Weight <- Weights],
+    Remainder = NodeCount - lists:sum(InitialNodeCounts),
+    [ClusterNodeCount + remainder_to_apply(Remainder, ClusterIndex) ||
+        {ClusterIndex, ClusterNodeCount}
+            <- lists:zip(lists:seq(1, ClusterCount), InitialNodeCounts)].
+
+node_count_from_weight(TotalNodes, Weight) ->
+    RawNodeCount = TotalNodes * Weight,
+    IntegerPortion = trunc(RawNodeCount),
+    Remainder = RawNodeCount - IntegerPortion,
+    case Remainder >= 0.5 of
+        true ->
+            IntegerPortion + 1;
+        false ->
+            IntegerPortion
+    end.
 
 remainder_to_apply(Remainder, Index) when Remainder > Index ->
     0;
@@ -149,85 +132,11 @@ maybe_join_clusters(Clusters, true) ->
 maybe_join_clusters(_Clusters, false) ->
     ok.
 
-%% deploy_or_build_cluster(Versions, true) ->
-%%     build_cluster(Versions);
-%% deploy_or_build_cluster(Versions, false) ->
-%%     deploy_nodes(Versions).
-
-%% @doc Deploy a set of freshly installed Riak nodes, returning a list of the
-%%      nodes deployed.
-%% @todo Re-add -spec after adding multi-version support
-deploy_nodes(Versions) when is_list(Versions) ->
-    deploy_nodes(Versions, [riak_kv]);
-deploy_nodes(NumNodes) when is_integer(NumNodes) ->
-    deploy_nodes([ current || _ <- lists:seq(1, NumNodes)]).
-
-%% @doc Deploy a set of freshly installed Riak nodes with the given
-%%      `InitialConfig', returning a list of the nodes deployed.
--spec deploy_nodes(NumNodes :: integer(), any()) -> [node()].
-deploy_nodes(NumNodes, InitialConfig) when is_integer(NumNodes) ->
-    NodeConfig = [{current, InitialConfig} || _ <- lists:seq(1,NumNodes)],
-    deploy_nodes(NodeConfig);
-deploy_nodes(Versions, Services) ->
-    NodeConfig = [ rt_config:version_to_config(Version) || Version <- Versions ],
-    Nodes = rt_harness:deploy_nodes(NodeConfig),
-    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
-    [ ok = rt:wait_for_service(Node, Service) || Node <- Nodes,
-                                              Service <- Services ],
-    Nodes.
-
-deploy_clusters(Settings) ->
-    ClusterConfigs = [case Setting of
-                          Configs when is_list(Configs) ->
-                              Configs;
-                          NumNodes when is_integer(NumNodes) ->
-                              [{current, default} || _ <- lists:seq(1, NumNodes)];
-                          {NumNodes, InitialConfig} when is_integer(NumNodes) ->
-                              [{current, InitialConfig} || _ <- lists:seq(1,NumNodes)];
-                          {NumNodes, Vsn, InitialConfig} when is_integer(NumNodes) ->
-                              [{Vsn, InitialConfig} || _ <- lists:seq(1,NumNodes)]
-                      end || Setting <- Settings],
-    rt_harness:deploy_clusters(ClusterConfigs).
-
-build_clusters(Settings) ->
-    Clusters = deploy_clusters(Settings),
-    [begin
-         join_cluster(Nodes),
-         lager:info("Cluster built: ~p", [Nodes])
-     end || Nodes <- Clusters],
-    Clusters.
-
 maybe_wait_for_transfers(Nodes, true) ->
     lager:info("Waiting for transfers"),
     rt:wait_until_transfers_complete(Nodes);
 maybe_wait_for_transfers(_Nodes, false) ->
     ok.
-
-%% @doc Safely construct a new cluster and return a list of the deployed nodes
-%% @todo Add -spec and update doc to reflect mult-version changes
-build_cluster(Versions) when is_list(Versions) ->
-    build_cluster(length(Versions), Versions, default);
-build_cluster(NumNodes) ->
-    build_cluster(NumNodes, default).
-
-%% @doc Safely construct a `NumNode' size cluster using
-%%      `InitialConfig'. Return a list of the deployed nodes.
-build_cluster(NumNodes, InitialConfig) ->
-    build_cluster(NumNodes, [], InitialConfig).
-
-build_cluster(NumNodes, Versions, InitialConfig) ->
-    %% Deploy a set of new nodes
-    Nodes =
-        case Versions of
-            [] ->
-                deploy_nodes(NumNodes, InitialConfig);
-            _ ->
-                deploy_nodes(Versions)
-        end,
-
-    join_cluster(Nodes),
-    lager:info("Cluster built: ~p", [Nodes]),
-    Nodes.
 
 join_cluster(Nodes) ->
     %% Ensure each node owns 100% of it's own ring

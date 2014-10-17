@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @doc riak_test_runner runs a riak_test module's run/0 function.
+%% @doc riak_test_runner runs a riak_test module's `confirm/0' function.
 -module(riak_test_runner).
 
 -behavior(gen_fsm).
