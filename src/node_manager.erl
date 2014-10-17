@@ -5,7 +5,7 @@
 %% API
 -export([start_link/2,
          reserve_nodes/3,
-         deploy_nodes/4,
+         deploy_nodes/5,
          upgrade_nodes/5,
          return_nodes/1,
          status/0,
@@ -37,9 +37,9 @@ start_link(Nodes, VersionMap) ->
 reserve_nodes(NodeCount, Versions, NotifyFun) ->
     gen_server:cast(?MODULE, {reserve_nodes, NodeCount, Versions, NotifyFun}).
 
--spec deploy_nodes([string()], string(), term(), function()) -> ok.
-deploy_nodes(Nodes, Version, Config, NotifyFun) ->
-  gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, NotifyFun}).
+-spec deploy_nodes([string()], string(), term(), list(atom()), function()) -> ok.
+deploy_nodes(Nodes, Version, Config, Services, NotifyFun) ->
+  gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, Services, NotifyFun}).
 
 -spec upgrade_nodes([string()], string(), string(), term(), function()) -> ok.
 upgrade_nodes(Nodes, CurrentVersion, NewVersion, Config, NotifyFun) ->
@@ -81,8 +81,8 @@ handle_cast({reserve_nodes, Count, Versions, NotifyFun}, State) ->
         reserve(Count, Versions, State),
     NotifyFun(Result),
     {noreply, UpdState};
-handle_cast({deploy_nodes, Nodes, Version, Config, NotifyFun}, State) ->
-    Result = deploy(Nodes, Version, Config),
+handle_cast({deploy_nodes, Nodes, Version, Config, Services, NotifyFun}, State) ->
+    Result = deploy(Nodes, Version, Config, Services),
     NotifyFun({nodes_deployed, Result}),
     {noreply, State};
 handle_cast({upgrade_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}, State) ->
@@ -165,21 +165,9 @@ version_available_fun(Count, VersionMap) ->
             end
     end.
 
-deploy(Nodes, Version, Config) ->
-    rt_harness_util:deploy_nodes(Nodes, Version, Config).
+deploy(Nodes, Version, Config, Services) ->
+    rt_harness_util:deploy_nodes(Nodes, Version, Config, Services).
 
 upgrade(Nodes, CurrentVersion, NewVersion, Config) ->
     [rt_node:upgrade(Node, CurrentVersion, NewVersion, Config) ||
         Node <- Nodes].
-
-%% maybe_deploy_nodes(Nodes, {Nodes, _, _}) ->
-%%     %% All nodes already deployed, move along
-%%     Nodes;
-%% maybe_deploy_nodes(Requested, {Deployed, Version, Config}) ->
-%%     case Deployed -- Requested of
-%%         [] ->
-%%             Deployed;
-%%         NodesToDeploy ->
-%%             _ = rt_harness_util:deploy_nodes(NodesToDeploy, Version, Config),
-%%             lists:sort(Deployed ++ NodesToDeploy)
-%%     end.

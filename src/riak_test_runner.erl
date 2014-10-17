@@ -222,8 +222,6 @@ wait_for_completion({test_result, Result}, State) ->
            properties=Properties} = State,
     Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
     Nodes = rt_properties:get(nodes, Properties),
-    %% TODO: Verify this is needed
-    ensure_all_nodes_running(Nodes),
     node_manager:upgrade_nodes(Nodes, CurrentVersion, NextVersion, Config, notify_fun()),
     UpdState = State#state{test_results=[Result | TestResults],
                            current_version=NextVersion,
@@ -274,31 +272,6 @@ test_fun(Properties, {ConfirmMod, ConfirmFun}, MetaData) ->
             ?MODULE:send_event(self(), test_result(TestResult))
     end.
 
-%% compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, true) ->
-%%     Nodes = rt_properties:get(nodes, SetupData),
-%%     WaitForTransfers = rt_properties:get(wait_for_transfers, SetupData),
-%%     UpgradeVersion = rt_properties:get(upgrade_version, SetupData),
-%%     fun() ->
-%%             InitialResult = ConfirmMod:ConfirmFun(SetupData, MetaData),
-%%             OtherResults = [begin
-%%                                 ensure_all_nodes_running(Nodes),
-%%                                 _ = rt_node:upgrade(Node, UpgradeVersion),
-%%                                 _ = rt_cluster:maybe_wait_for_transfers(Nodes, WaitForTransfers),
-%%                                 ConfirmMod:ConfirmFun(SetupData, MetaData)
-%%                             end || Node <- Nodes],
-%%             lists:all(fun(R) -> R =:= pass end, [InitialResult | OtherResults])
-%%     end;
-%% compose_confirm_fun({ConfirmMod, ConfirmFun}, SetupData, MetaData, false) ->
-%%     fun() ->
-%%             ConfirmMod:ConfirmFun(SetupData, MetaData)
-%%     end.
-
-ensure_all_nodes_running(Nodes) ->
-    [begin
-         ok = rt_node:start_and_wait(Node),
-         ok = rt:wait_until_registered(Node, riak_core_ring_manager)
-     end || Node <- Nodes].
-
 function_name(confirm, TestModule) ->
     TMString = atom_to_list(TestModule),
     Tokz = string:tokens(TMString, ":"),
@@ -316,91 +289,6 @@ function_name(FunName, TestModule, Arity, Default) when is_atom(TestModule) ->
         false ->
             {Default, FunName}
     end.
-
-%% -spec run(integer(), atom(), [{atom(), term()}], list()) -> [tuple()].
-%% %% @doc Runs a module's run/0 function after setting up a log
-%% %%      capturing backend for lager.  It then cleans up that backend
-%% %%      and returns the logs as part of the return proplist.
-%% run(TestModule, Outdir, TestMetaData, HarnessArgs) ->
-%%     %% TODO: Need to make a lager backend that can separate out log
-%%     %% messages to different files. Not sure what the effect of this
-%%     %% will be in concurrent test execution scenarios.
-%%     %% TODO: Check HarnessArgs for `UseRTLagerBackend' property
-%%     add_lager_backend(TestModule, Outdir, false),
-%%     %% BackendExtras = case proplists:get_value(multi_config, TestMetaData) of
-%%     %%                     undefined -> [];
-%%     %%                     Value -> [{multi_config, Value}]
-%%     %%                 end,
-%%     %% Backend = rt_backend:set_backend(
-%%     %%              proplists:get_value(backend, TestMetaData), BackendExtras),
-%%     %% {PropsMod, PropsFun} = function_name(properties, TestModule, 0, rt_cluster),
-%%     {SetupMod, SetupFun} = function_name(setup, TestModule, 2, rt_cluster),
-%%     {ConfirmMod, ConfirmFun} = function_name(confirm, TestModule),
-%%     {Status, Reason} =
-%%         case check_prereqs(ConfirmMod) of
-%%             true ->
-%%                 lager:notice("Running Test ~s", [TestModule]),
-%%                 execute(TestModule,
-%%                         {PropsMod, PropsFun},
-%%                         {SetupMod, SetupFun},
-%%                         {ConfirmMod, ConfirmFun},
-%%                         TestMetaData);
-%%             not_present ->
-%%                 {fail, test_does_not_exist};
-%%             _ ->
-%%                 {fail, all_prereqs_not_present}
-%%         end,
-
-    %% lager:notice("~s Test Run Complete", [TestModule]),
-    %% {ok, Logs} = remove_lager_backend(),
-    %% Log = unicode:characters_to_binary(Logs),
-
-    %% RetList = [{test, TestModule}, {status, Status}, {log, Log}, {backend, Backend} | proplists:delete(backend, TestMetaData)],
-    %% case Status of
-    %%     fail -> RetList ++ [{reason, iolist_to_binary(io_lib:format("~p", [Reason]))}];
-    %%     _ -> RetList
-    %% end.
-
-
-%% does some group_leader swapping, in the style of EUnit.
-%% execute(TestModule, PropsModFun, SetupModFun, ConfirmModFun, TestMetaData) ->
-
-
-    %% Pid = spawn_link(?MODULE, return_to_exit, [Mod, Fun, []]),
-    %% Pid = spawn_link(test_fun(PropsModFun, SetupModFun, ConfirmModFun, TestMetaData)),
-    %% Ref = case rt_config:get(test_timeout, undefined) of
-    %%     Timeout when is_integer(Timeout) ->
-    %%         erlang:send_after(Timeout, self(), test_took_too_long);
-    %%     _ ->
-    %%         undefined
-    %% end,
-
-    %% {Status, Reason} = rec_loop(Pid, TestModule, TestMetaData),
-
-    %% riak_test_group_leader:tidy_up(OldGroupLeader),
-    %% case Status of
-    %%     fail ->
-    %%         ErrorHeader = "================ " ++ atom_to_list(TestModule) ++ " failure stack trace =====================",
-    %%         ErrorFooter = [ $= || _X <- lists:seq(1,length(ErrorHeader))],
-    %%         Error = io_lib:format("~n~s~n~p~n~s~n", [ErrorHeader, Reason, ErrorFooter]),
-    %%         lager:error(Error);
-    %%     _ -> meh
-    %% end,
-    %% {Status, Reason}.
-
-%% add_lager_backend(TestModule, Outdir, true) ->
-%%     add_lager_backend(TestModule, Outdir, false),
-%%     gen_event:add_handler(lager_event, riak_test_lager_backend, [rt_config:get(lager_level, info), false]),
-%%     lager:set_loglevel(riak_test_lager_backend, rt_config:get(lager_level, info));
-%% add_lager_backend(TestModule, Outdir, false) ->
-%%     case Outdir of
-%%         undefined -> ok;
-%%         _ ->
-%%             gen_event:add_handler(lager_event, lager_file_backend,
-%%                 {Outdir ++ "/" ++ atom_to_list(TestModule) ++ ".dat_test_output",
-%%                  rt_config:get(lager_level, info), 10485760, "$D0", 1}),
-%%             lager:set_loglevel(lager_file_backend, rt_config:get(lager_level, info))
-%%     end.
 
 %% remove_lager_backend() ->
 %%     gen_event:delete_handler(lager_event, lager_file_backend, []),

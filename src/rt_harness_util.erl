@@ -32,8 +32,7 @@
          cmd/1,
          cmd/2,
          console/2,
-         %% deploy_clusters/1,
-         deploy_nodes/3,
+         deploy_nodes/4,
          get_ip/1,
          node_id/1,
          node_version/1,
@@ -83,7 +82,7 @@ console(Node, Expected) ->
 %%     end.
 
 %% deploy_nodes(NodeConfig) ->
-deploy_nodes(Nodes, Version, Config) ->
+deploy_nodes(Nodes, Version, Config, Services) ->
     %% create snmp dirs, for EE
     create_dirs(Nodes),
 
@@ -124,7 +123,6 @@ deploy_nodes(Nodes, Version, Config) ->
 
     %% Wait for services to start
     %% TODO: Plumb through service specification
-    Services = [riak_kv],
     lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
     [ ok = rt:wait_for_service(Node, Service)
       || Node <- Nodes,

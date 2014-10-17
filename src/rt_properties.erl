@@ -40,6 +40,7 @@
           cluster_count=1 :: pos_integer(),
           cluster_weights :: [float()],
           clusters :: proplists:proplist(),
+          required_services=[riak_kv] :: [atom()],
           config=default_config() :: term()
          }).
 -type properties() :: #rt_properties_v1{}.
@@ -205,5 +206,9 @@ field_index(cluster_count) ->
     ?RT_PROPERTIES.cluster_count;
 field_index(cluster_weights) ->
     ?RT_PROPERTIES.cluster_weights;
+field_index(clusters) ->
+    ?RT_PROPERTIES.clusters;
+field_index(required_services) ->
+    ?RT_PROPERTIES.required_services;
 field_index(config) ->
     ?RT_PROPERTIES.config.
