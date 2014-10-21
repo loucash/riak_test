@@ -43,7 +43,7 @@ execute(Tests, ParsedArgs, _HarnessArgs) ->
     Report = report(ParsedArgs),
     UpgradeList = upgrade_list(
                     proplists:get_value(upgrade_path, ParsedArgs)),
-    Backend = proplists:get_value(backend, ParsedArgs),
+    Backend = proplists:get_value(backend, ParsedArgs, bitcask),
 
     {ok, Executor} = riak_test_executor:start_link(Tests,
                                                    Backend,
@@ -54,7 +54,11 @@ execute(Tests, ParsedArgs, _HarnessArgs) ->
     wait_for_results(Executor, [], length(Tests), 0).
 
 
-report_results(_Results) ->
+report_results(Results, Verbose) ->
+    %% TODO: Good place to also do giddyup reporting and provide a
+    %% place for extending to any other reporting sources that might
+    %% be useful.
+    print_summary(Results, undefined, Verbose),
     ok.
 
     %% TestResults = run_tests(Tests, Outdir, Report, HarnessArgs),
@@ -79,7 +83,7 @@ report_results(_Results) ->
 %% TODO: Use `TestCount' and `Completed' to display progress output
 wait_for_results(Executor, TestResults, TestCount, Completed) ->
     receive
-        {Executor, {test_result, Result, _TestMetaData}} ->
+        {Executor, {test_result, Result}} ->
             wait_for_results(Executor, [Result | TestResults], TestCount, Completed+1);
         {Executor, done} ->
             rt_cover:stop(),
@@ -89,15 +93,20 @@ wait_for_results(Executor, TestResults, TestCount, Completed) ->
     end.
 
 finalize(TestResults, Args) ->
-    report_results(TestResults),
-    [rt_cover:maybe_import_coverage(proplists:get_value(coverdata, R)) ||
-        R <- TestResults],
-    CoverDir = rt_config:get(cover_output, "coverage"),
-    Coverage = rt_cover:maybe_write_coverage(all, CoverDir),
+    %% TODO: Fixup coverage reporting
+    %% [rt_cover:maybe_import_coverage(proplists:get_value(coverdata, R)) ||
+    %%     R <- TestResults],
+    %% CoverDir = rt_config:get(cover_output, "coverage"),
+    %% Coverage = rt_cover:maybe_write_coverage(all, CoverDir),
 
+    node_manager:stop(),
+    riak_test_executor:stop(),
     Verbose = proplists:is_defined(verbose, Args),
-    Teardown = not proplists:get_value(keep, Args, false),
-    maybe_teardown(Teardown, TestResults, Coverage, Verbose),
+    report_results(TestResults, Verbose),
+
+
+    %% Teardown = not proplists:get_value(keep, Args, false),
+    %% maybe_teardown(Teardown, TestResults, Coverage, Verbose),
     ok.
 
 %% Option Name, Short Code, Long Code, Argument Spec, Help Message
@@ -123,14 +132,15 @@ print_help() ->
     halt(0).
 
 add_deps(Path) ->
+    io:format("Adding deps path: ~p~n", [Path]),
     {ok, Deps} = file:list_dir(Path),
     [code:add_path(lists:append([Path, "/", Dep, "/ebin"])) || Dep <- Deps],
     ok.
 
 test_setup(ParsedArgs) ->
-    Backend = proplists:get_value(backend, ParsedArgs, bitcask),
+    %% Backend = proplists:get_value(backend, ParsedArgs, bitcask),
     %% Prepare the test harness
-    {Nodes, VersionMap} = rt_harness:setup(Backend),
+    {Nodes, VersionMap} = rt_harness:setup(),
 
     %% Start the node manager
     DefaultVersion = rt_config:get(default_version, "head"),
@@ -274,20 +284,20 @@ set_lager_env(LagerLevel) ->
                                            {level, LagerLevel}]}],
     application:set_env(lager, handlers, HandlerConfig).
 
-maybe_teardown(false, TestResults, Coverage, Verbose) ->
-    print_summary(TestResults, Coverage, Verbose),
-    lager:info("Keeping cluster running as requested");
-maybe_teardown(true, TestResults, Coverage, Verbose) ->
-    case {length(TestResults), proplists:get_value(status, hd(TestResults))} of
-        {1, fail} ->
-            print_summary(TestResults, Coverage, Verbose),
-            so_kill_riak_maybe();
-        _ ->
-            lager:info("Multiple tests run or no failure"),
-            rt_cluster:teardown(),
-            print_summary(TestResults, Coverage, Verbose)
-    end,
-    ok.
+%% maybe_teardown(false, TestResults, Coverage, Verbose) ->
+%%     print_summary(TestResults, Coverage, Verbose),
+%%     lager:info("Keeping cluster running as requested");
+%% maybe_teardown(true, TestResults, Coverage, Verbose) ->
+%%     case {length(TestResults), proplists:get_value(status, hd(TestResults))} of
+%%         {1, fail} ->
+%%             print_summary(TestResults, Coverage, Verbose),
+%%             so_kill_riak_maybe();
+%%         _ ->
+%%             lager:info("Multiple tests run or no failure"),
+%%             rt_cluster:teardown(),
+%%             print_summary(TestResults, Coverage, Verbose)
+%%     end,
+%%     ok.
 
 compose_test_data(ParsedArgs) ->
     RawTestList = proplists:get_all_values(tests, ParsedArgs),
@@ -311,36 +321,14 @@ compose_test_data(ParsedArgs) ->
     %% lists:foldl(TestFoldFun, [], lists:usort(DirTests ++ SpecificTests)).
     lists:usort(DirTests ++ SpecificTests).
 
-%% test_data_fun(Version, Project, Backends, Upgrades) ->
-%%     fun(Test, Tests) ->
-%%             [{list_to_atom(Test),
-%%               compose_test_datum(Version, Project, Backend, Upgrade)}
-%%              || Backend <- Backends, Upgrade <- Upgrades ] ++ Tests
-%%     end.
-
-%% compose_test_datum(Version, Project, undefined, undefined) ->
-%%     [{id, -1},
-%%      {platform, <<"local">>},
-%%      {version, Version},
-%%      {project, Project}];
-%% compose_test_datum(Version, Project, undefined, Upgrade) ->
-%%     compose_test_datum(Version, Project, undefined, undefined) ++
-%%         [{upgrade_version, Upgrade}];
-%% compose_test_datum(Version, Project, Backend, undefined) ->
-%%     compose_test_datum(Version, Project, undefined, undefined) ++
-%%         [{backend, Backend}];
-%% compose_test_datum(Version, Project, Backend, Upgrade) ->
-%%     compose_test_datum(Version, Project, undefined, undefined) ++
-%%         [{backend, Backend}, {upgrade_version, Upgrade}].
-
 extract_test_names(Test, {CodePaths, TestNames}) ->
     {[filename:dirname(Test) | CodePaths],
-     [filename:rootname(filename:basename(Test)) | TestNames]}.
+     [list_to_atom(filename:rootname(filename:basename(Test))) | TestNames]}.
 
 which_tests_to_run(undefined, CommandLineTests) ->
     {Tests, NonTests} =
         lists:partition(fun is_runnable_test/1, CommandLineTests),
-    lager:info("These modules arenot runnable tests: ~p",
+    io:format("These modules arenot runnable tests: ~p~n",
                [[NTMod || {NTMod, _} <- NonTests]]),
     Tests;
 which_tests_to_run(Platform, []) ->
@@ -383,7 +371,7 @@ filter_merge_meta(SMeta, CMeta, [Field|Rest]) ->
     end.
 
 %% Check for api compatibility
-is_runnable_test({TestModule, _}) ->
+is_runnable_test(TestModule) ->
     {Mod, Fun} = riak_test_runner:function_name(confirm, TestModule),
     code:ensure_loaded(Mod),
     erlang:function_exported(Mod, Fun, 0) orelse
@@ -451,44 +439,85 @@ parse_webhook(Props) ->
             undefined
     end.
 
-print_summary(TestResults, CoverResult, Verbose) ->
+test_summary_fun({test_result, {Test, pass, _}}, {{Pass, _Fail, _Skipped}, Width}) ->
+    TestNameLength = length(atom_to_list(Test)),
+    UpdWidth =
+        case TestNameLength > Width of
+            true ->
+                TestNameLength;
+            false ->
+                Width
+        end,
+    {{Pass+1, _Fail, _Skipped}, UpdWidth};
+test_summary_fun({test_result, {Test, {fail, _}, _}}, {{_Pass, Fail, _Skipped}, Width}) ->
+    TestNameLength = length(atom_to_list(Test)),
+    UpdWidth =
+        case TestNameLength > Width of
+            true ->
+                TestNameLength;
+            false ->
+                Width
+        end,
+    {{_Pass, Fail+1, _Skipped}, UpdWidth};
+test_summary_fun({test_result, {Test, {skipped, _}, _}}, {{_Pass, _Fail, Skipped}, Width}) ->
+    TestNameLength = length(atom_to_list(Test)),
+    UpdWidth =
+        case TestNameLength > Width of
+            true ->
+                TestNameLength;
+            false ->
+                Width
+        end,
+    {{_Pass, _Fail, Skipped+1}, UpdWidth}.
+
+print_test_result({test_result, {Test, Result, Duration}}, Width) ->
+    TestString = list_to_atom(Test),
+    case Result of
+        {Status, Reason} ->
+            io:format("~s: ~s ~p  ~B~n", [string:left(TestString, Width), Status, Reason, Duration]);
+        pass ->
+            io:format("~s: ~s  ~B~n", [string:left(TestString, Width), "pass", Duration])
+    end.
+
+print_summary(TestResults, _CoverResult, Verbose) ->
     io:format("~nTest Results:~n"),
 
-    Results = [
-                [ atom_to_list(proplists:get_value(test, SingleTestResult)) ++ "-" ++
-                      backend_list(proplists:get_value(backend, SingleTestResult)),
-                  proplists:get_value(status, SingleTestResult),
-                  proplists:get_value(reason, SingleTestResult)]
-                || SingleTestResult <- TestResults],
-    Width = test_name_width(Results),
+    %% Results = [
+    %%             [atom_to_list(Test) ,
+    %%               proplists:get_value(status, SingleTestResult),
+    %%               proplists:get_value(reason, SingleTestResult)]
+    %%             || {test_result, {Test, Result, Duration}} <- TestResults],
+    {StatusCounts, Width} = lists:foldl(fun test_summary_fun/2, {{0,0,0}, 0}, TestResults),
+    %% Width = test_name_width(Results),
 
-    Print = fun(Test, Status, Reason) ->
-        case {Status, Verbose} of
-            {fail, true} -> io:format("~s: ~s ~p~n", [string:left(Test, Width), Status, Reason]);
-            _ -> io:format("~s: ~s~n", [string:left(Test, Width), Status])
-        end
+    case Verbose of
+        true ->
+            [print_test_result(Result, Width) || Result <- TestResults];
+        false ->
+            ok
     end,
-    [ Print(Test, Status, Reason) || [Test, Status, Reason] <- Results],
 
-    PassCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= pass end, TestResults)),
-    FailCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= fail end, TestResults)),
+    %% PassCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= pass end, TestResults)),
+    %% FailCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= fail end, TestResults)),
+    {PassCount, FailCount, SkippedCount} = StatusCounts,
     io:format("---------------------------------------------~n"),
     io:format("~w Tests Failed~n", [FailCount]),
+    io:format("~w Tests Skipped~n", [SkippedCount]),
     io:format("~w Tests Passed~n", [PassCount]),
     Percentage = case PassCount == 0 andalso FailCount == 0 of
         true -> 0;
-        false -> (PassCount / (PassCount + FailCount)) * 100
+        false -> (PassCount / (PassCount + FailCount + SkippedCount)) * 100
     end,
     io:format("That's ~w% for those keeping score~n", [Percentage]),
 
-    case CoverResult of
-        cover_disabled ->
-            ok;
-        {Coverage, AppCov} ->
-            io:format("Coverage : ~.1f%~n", [Coverage]),
-            [io:format("    ~s : ~.1f%~n", [App, Cov])
-             || {App, Cov, _} <- AppCov]
-    end,
+    %% case CoverResult of
+    %%     cover_disabled ->
+    %%         ok;
+    %%     {Coverage, AppCov} ->
+    %%         io:format("Coverage : ~.1f%~n", [Coverage]),
+    %%         [io:format("    ~s : ~.1f%~n", [App, Cov])
+    %%          || {App, Cov, _} <- AppCov]
+    %% end,
     ok.
 
 test_name_width(Results) ->

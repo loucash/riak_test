@@ -84,7 +84,7 @@ console(Node, Expected) ->
 %% deploy_nodes(NodeConfig) ->
 deploy_nodes(Nodes, Version, Config, Services) ->
     %% create snmp dirs, for EE
-    create_dirs(Nodes),
+    create_dirs(Version, Nodes),
 
     %% Set initial config
     ConfigUpdateFun =
@@ -374,8 +374,10 @@ all_the_files(DevPath, File) ->
 devpaths() ->
     lists:usort([ DevPath || {_Name, DevPath} <- proplists:delete(root, rt_config:get(rtdev_path))]).
 
-create_dirs(Nodes) ->
-    Snmp = [node_path(Node) ++ "/data/snmp/agent/db" || Node <- Nodes],
+create_dirs(Version, Nodes) ->
+    VersionPath = filename:join(?PATH, Version),
+    Snmp = [filename:join([VersionPath, Node, "data/snmp/agent/db"]) ||
+               Node <- Nodes],
     [?assertCmd("mkdir -p " ++ Dir) || Dir <- Snmp].
 
 %% check_node({_N, Version}) ->
@@ -399,10 +401,10 @@ create_dirs(Nodes) ->
 %%             throw({invalid_config, {rt_default_config, BadValue}})
 %%     end.
 
-node_path(Node) ->
-    N = node_id(Node),
-    Path = relpath(node_version(N)),
-    lists:flatten(io_lib:format("~s/dev/dev~b", [Path, N])).
+%% node_path(Node) ->
+%%     N = node_id(Node),
+%%     Path = relpath(node_version(N)),
+%%     lists:flatten(io_lib:format("~s/dev/dev~b", [Path, N])).
 
 set_advanced_conf(all, NameValuePairs) ->
     lager:info("rtdev:set_advanced_conf(all, ~p)", [NameValuePairs]),
@@ -448,7 +450,7 @@ setup_harness(VersionMap, Nodes) ->
     %% rt_config:set(rt_nodes_available, Nodes),
     %% rt_config:set(rt_version_map, VersionMap),
     %% rt_config:set(rt_versions, VersionMap),
-    [create_dirs(VersionNodes) || {_, VersionNodes} <- VersionMap],
+    %% [create_dirs(Version, VersionNodes) || {Version, VersionNodes} <- VersionMap],
     {Nodes, VersionMap}.
 
 %% %% @doc Stop nodes and wipe out their data directories

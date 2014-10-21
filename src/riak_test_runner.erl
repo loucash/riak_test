@@ -57,6 +57,7 @@
                 execution_pid :: pid(),
                 group_leader :: pid(),
                 start_time :: erlang:timestamp(),
+                end_time :: erlang:timestamp(),
                 setup_modfun :: {atom(), atom()},
                 confirm_modfun :: {atom(), atom()},
                 backend_check :: atom(),
@@ -210,10 +211,10 @@ wait_for_completion({test_result, Result}, State=#state{remaining_versions=[]}) 
     %% along with reasons.
     %% TODO: Calculate test duration and include with results reported
     %% to executor
-    _EndTime = os:timestamp(),
-    notify_executor(Result, State),
-    cleanup(State),
-    {stop, normal, State};
+    UpdState = State#state{end_time=os:timestamp()},
+    notify_executor(Result, UpdState),
+    cleanup(UpdState),
+    {stop, normal, UpdState};
 wait_for_completion({test_result, Result}, State) ->
     #state{backend=Backend,
            test_results=TestResults,
@@ -334,14 +335,23 @@ notify_fun() ->
 cleanup(#state{group_leader=OldGroupLeader}) ->
     riak_test_group_leader:tidy_up(OldGroupLeader).
 
-notify_executor(timeout, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), {fail, timeout}},
+notify_executor(timeout, #state{test_module=Test,
+                                start_time=Start,
+                                end_time=End}) ->
+    Duration = timer:now_diff(End, Start),
+    Notification = {test_complete, Test, self(), {fail, timeout}, Duration},
     riak_test_executor:send_event(Notification);
-notify_executor(pass, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), pass},
+notify_executor(pass, #state{test_module=Test,
+                             start_time=Start,
+                             end_time=End}) ->
+    Duration = timer:now_diff(End, Start),
+    Notification = {test_complete, Test, self(), pass, Duration},
     riak_test_executor:send_event(Notification);
-notify_executor(FailResult, #state{test_module=Test}) ->
-    Notification = {test_complete, Test, self(), FailResult},
+notify_executor(FailResult, #state{test_module=Test,
+                                   start_time=Start,
+                                   end_time=End}) ->
+    Duration = timer:now_diff(End, Start),
+    Notification = {test_complete, Test, self(), FailResult, Duration},
     riak_test_executor:send_event(Notification).
 
 test_versions(Properties) ->

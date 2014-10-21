@@ -50,13 +50,13 @@
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
--define(DEVS(N), lists:concat(["dev", N, "@127.0.0.1"])).
+-define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
 -define(PATH, (rt_config:get(root_path))).
 -define(SCRATCH_DIR, (rt_config:get(rt_scatch_dir))).
 
 get_deps() ->
-    lists:flatten(io_lib:format("~s/dev/dev1/lib", [relpath(current)])).
+    lists:flatten(io_lib:format("~s/dev1/lib", [filename:join(?PATH, "head")])).
 
 riakcmd(Path, N, Cmd) ->
     ExecName = rt_config:get(exec_name, "riak"),
@@ -114,18 +114,23 @@ run_riak_repl(N, Path, Cmd) ->
 
 -spec versions() -> [string()].
 versions() ->
-    case file:list_dir(rt_config:get(root_path)) of
+    RootPath = ?PATH,
+    case file:list_dir(RootPath) of
         {ok, RootFiles} ->
-            [Version || Version <- RootFiles, filelib:is_dir(Version)];
+            [Version || Version <- RootFiles,
+                        filelib:is_dir(filename:join(RootPath, Version)),
+                        hd(Version) =/= $.];
         {error, _} ->
             []
     end.
 
 -spec harness_nodes(string()) -> [string()].
 harness_nodes(Version) ->
-    case file:list_dir(rt_config:get(root_path) ++ Version) of
+    VersionPath = filename:join(?PATH, Version),
+    case file:list_dir(VersionPath) of
         {ok, VersionFiles} ->
-            [Node || Node <- VersionFiles, filelib:is_dir(Node)];
+            [Node || Node <- VersionFiles,
+                     filelib:is_dir(filename:join(VersionPath, Node))];
         {error, _} ->
             []
     end.
@@ -135,19 +140,20 @@ so_fresh_so_clean(VersionMap) ->
     %% if the next test boots a legacy node we'll end up with cover
     %% incompatabilities and crash the cover server
     rt_cover:maybe_stop_on_nodes(),
-    Path = relpath(root),
+    %% Path = relpath(root),
     %% Stop all discoverable nodes, not just nodes we'll be using for
     %% this test.
     StopAllFun =
         fun({Version, VersionNodes}) ->
-                stop_nodes(filename:join([?PATH, Version]), VersionNodes)
+                VersionPath = filename:join([?PATH, Version]),
+                stop_nodes(VersionPath, VersionNodes)
         end,
     rt:pmap(StopAllFun, VersionMap),
 
     %% Reset nodes to base state
     lager:info("Resetting nodes to fresh state"),
-    _ = run_git(Path, "reset HEAD --hard"),
-    _ = run_git(Path, "clean -fd"),
+    _ = run_git(?PATH, "reset HEAD --hard"),
+    _ = run_git(?PATH, "clean -fd"),
 
     lager:info("Cleaning up lingering pipe directories"),
     rt:pmap(fun({Version, _}) ->
@@ -164,6 +170,7 @@ so_fresh_so_clean(VersionMap) ->
 
 setup_harness() ->
     %% Get node names and populate node map
+    io:format("Versions: ~p~n", [versions()]),
     VersionMap = [{Version, harness_nodes(Version)} || Version <- versions()],
     Nodes = harness_nodes(rt_config:get(default_version, "head")),
     so_fresh_so_clean(VersionMap),
@@ -590,7 +597,7 @@ stop_nodes(Path, Nodes) ->
             ok
     end,
     lager:info("Trying to obtain node shutdown_time via RPC..."),
-    Tmout = case rpc:call(hd(Nodes), init, get_argument, [shutdown_time]) of
+    Tmout = case rpc:call(?DEV(hd(Nodes)), init, get_argument, [shutdown_time]) of
                 {ok,[[Tm]]} -> list_to_integer(Tm)+10000;
                 _ -> 20000
             end,

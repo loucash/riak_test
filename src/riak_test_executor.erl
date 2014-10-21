@@ -110,13 +110,13 @@ request_nodes(timeout, State) ->
                                VersionsToTest,
                                reservation_notify_fun()),
     {next_state, launch_test, State};
-request_nodes({test_complete, Test, Pid, Results}, State) ->
+request_nodes({test_complete, Test, Pid, Results, Duration}, State) ->
     #state{pending_tests=Pending,
            waiting_tests=Waiting,
            running_tests=Running,
            runner_pids=Pids} = State,
     %% Report results
-    report_results(Test, Results, State),
+    report_results(Test, Results, Duration, State),
     UpdState = State#state{running_tests=lists:delete(Test, Running),
                            runner_pids=lists:delete(Pid, Pids),
                            pending_tests=Pending++Waiting,
@@ -127,7 +127,7 @@ request_nodes(_Event, _State) ->
 
 launch_test(insufficient_versions_available, State) ->
     #state{pending_tests=[HeadPending | RestPending]} = State,
-    report_results(HeadPending, {skipped, insufficient_versions}, State),
+    report_results(HeadPending, {skipped, insufficient_versions}, 0, State),
     UpdState = State#state{pending_tests=RestPending},
     launch_test_transition(UpdState);
 launch_test(not_enough_nodes, State) ->
@@ -154,13 +154,13 @@ launch_test({nodes, Nodes}, State) ->
                            runner_pids=[Pid | Pids],
                            running_tests=[NextTest | Running]},
     launch_test_transition(UpdState);
-launch_test({test_complete, Test, Pid, Results}, State) ->
+launch_test({test_complete, Test, Pid, Results, Duration}, State) ->
     #state{pending_tests=Pending,
            waiting_tests=Waiting,
            running_tests=Running,
            runner_pids=Pids} = State,
     %% Report results
-    report_results(Test, Results, State),
+    report_results(Test, Results, Duration, State),
     UpdState = State#state{running_tests=lists:delete(Test, Running),
                            runner_pids=lists:delete(Pid, Pids),
                            pending_tests=Pending++Waiting,
@@ -169,13 +169,13 @@ launch_test({test_complete, Test, Pid, Results}, State) ->
 launch_test(_Event, _State) ->
     ok.
 
-wait_for_completion({test_complete, Test, Pid, Results}, State) ->
+wait_for_completion({test_complete, Test, Pid, Results, Duration}, State) ->
     #state{pending_tests=Pending,
            waiting_tests=Waiting,
            running_tests=Running,
            runner_pids=Pids} = State,
     %% Report results
-    report_results(Test, Results, State),
+    report_results(Test, Results, Duration, State),
     UpdState = State#state{running_tests=lists:delete(Test, Running),
                            runner_pids=lists:delete(Pid, Pids),
                            pending_tests=Pending++Waiting,
@@ -202,8 +202,8 @@ wait_for_completion(_Event, _From, _State) ->
 %%% Internal functions
 %%%===================================================================
 
-report_results(Test, Results, #state{notify_pid=NotifyPid}) ->
-    {self(), {test_result, {Test, Results}}} ! NotifyPid,
+report_results(Test, Results, Duration, #state{notify_pid=NotifyPid}) ->
+    {self(), {test_result, {Test, Results, Duration}}} ! NotifyPid,
      ok.
 
 report_done(#state{notify_pid=NotifyPid}) ->
