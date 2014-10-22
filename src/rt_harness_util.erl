@@ -22,7 +22,7 @@
 -module(rt_harness_util).
 
 -include_lib("eunit/include/eunit.hrl").
--define(DEVS(N), lists:concat(["dev", N, "@127.0.0.1"])).
+-define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
 -define(PATH, (rt_config:get(root_path))).
 
@@ -101,7 +101,8 @@ deploy_nodes(Nodes, Version, Config, Services) ->
     rt:pmap(RunRiakFun, Nodes),
 
     %% Ensure nodes started
-    [ok = rt:wait_until_pingable(Node) || Node <- Nodes],
+    lager:debug("Wait until pingable: ~p", [Nodes]),
+    [ok = rt:wait_until_pingable(?DEV(Node)) || Node <- Nodes],
 
     %% TODO Rubbish! Fix this.
     %% %% Enable debug logging
@@ -110,7 +111,8 @@ deploy_nodes(Nodes, Version, Config, Services) ->
 
     %% We have to make sure that riak_core_ring_manager is running
     %% before we can go on.
-    [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
+    [ok = rt:wait_until_registered(?DEV(N), riak_core_ring_manager) ||
+        N <- Nodes],
 
     %% Ensure nodes are singleton clusters
     case Version =/= "0.14.2" of
@@ -122,13 +124,12 @@ deploy_nodes(Nodes, Version, Config, Services) ->
     end,
 
     %% Wait for services to start
-    %% TODO: Plumb through service specification
-    lager:info("Waiting for services ~p to start on ~p.", [Services, Nodes]),
-    [ ok = rt:wait_for_service(Node, Service)
+    lager:debug("Waiting for services ~p to start on ~p.", [Services, Nodes]),
+    [ ok = rt:wait_for_service(?DEV(Node), Service)
       || Node <- Nodes,
          Service <- Services ],
 
-    lager:info("Deployed nodes: ~p", [Nodes]),
+    lager:debug("Deployed nodes: ~p", [Nodes]),
     Nodes.
 
 interactive(Node, Command, Exp) ->

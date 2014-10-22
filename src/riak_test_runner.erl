@@ -28,7 +28,8 @@
          send_event/2,
          stop/0]).
 
--export([function_name/2]).
+-export([function_name/2,
+         function_name/4]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -76,6 +77,7 @@ start(TestModule, Backend, Properties) ->
     gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
 
 send_event(Pid, Msg) ->
+    lager:info("Sending ~p to ~p", [Msg, Pid]),
     gen_fsm:send_event(Pid, Msg).
 
 %% @doc Stop the executor
@@ -151,15 +153,18 @@ setup(timeout, State=#state{backend=Backend,
     group_leader(NewGroupLeader, self()),
 
     {0, UName} = rt:cmd("uname -a"),
-    lager:info("Test Runner `uname -a` : ~s", [UName]),
+    lager:info("Test Runner: ~s", [UName]),
 
     Nodes = rt_properties:get(nodes, Properties),
+    Services = rt_properties:get(required_services, Properties),
     {StartVersion, OtherVersions} = test_versions(Properties),
     Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
     node_manager:deploy_nodes(Nodes,
                               StartVersion,
                               Config,
-                              notify_fun()),
+                              Services,
+                              notify_fun(self())),
+    lager:info("Waiting for deploy nodes response at ~p", [self()]),
     UpdState = State#state{current_version=StartVersion,
                            remaining_versions=OtherVersions},
     {next_state, execute, UpdState};
@@ -173,7 +178,7 @@ execute({nodes_deployed, _}, State) ->
            confirm_modfun=ConfirmModFun,
            metadata=MetaData,
            test_timeout=TestTimeout} = State,
-    lager:notice("Running Test ~s", [TestModule]),
+    lager:notice("Running ~s", [TestModule]),
 
     StartTime = os:timestamp(),
     %% Perform test setup which includes clustering of the nodes if
@@ -184,7 +189,8 @@ execute({nodes_deployed, _}, State) ->
             {ok, UpdProperties} ->
                 Pid = spawn_link(test_fun(UpdProperties,
                                           ConfirmModFun,
-                                          MetaData)),
+                                          MetaData,
+                                          self())),
                 State#state{execution_pid=Pid,
                             properties=UpdProperties,
                             start_time=StartTime};
@@ -193,7 +199,8 @@ execute({nodes_deployed, _}, State) ->
                 State#state{start_time=StartTime}
         end,
     {next_state, wait_for_completion, UpdState, TestTimeout};
-execute(_Event, _State) ->
+execute(Event, _State) ->
+    lager:info("Got unexepcted event in execute state: ~p", [Event]),
     {next_state, execute, _State}.
 
 %% Simple function to hide the details of the message wrapping
@@ -223,7 +230,11 @@ wait_for_completion({test_result, Result}, State) ->
            properties=Properties} = State,
     Config = rt_backend:set(Backend, rt_properties:get(config, Properties)),
     Nodes = rt_properties:get(nodes, Properties),
-    node_manager:upgrade_nodes(Nodes, CurrentVersion, NextVersion, Config, notify_fun()),
+    node_manager:upgrade_nodes(Nodes,
+                               CurrentVersion,
+                               NextVersion,
+                               Config,
+                               notify_fun(self())),
     UpdState = State#state{test_results=[Result | TestResults],
                            current_version=NextVersion,
                            remaining_versions=RestVersions},
@@ -241,7 +252,8 @@ wait_for_upgrade(nodes_upgraded, State) ->
     %% a call to an exported function in `rt_cluster'
     Pid = spawn_link(test_fun(Properties,
                               ConfirmModFun,
-                              MetaData)),
+                              MetaData,
+                              self())),
     UpdState = State#state{execution_pid=Pid},
     {next_state, wait_for_completion, UpdState, TestTimeout};
 wait_for_upgrade(_Event, _State) ->
@@ -265,12 +277,12 @@ wait_for_upgrade(_Event, _From, _State) ->
 %%% Internal functions
 %%%===================================================================
 
--spec test_fun(rt_properties:properties(), {atom(), atom()}, proplists:proplist()) ->
+-spec test_fun(rt_properties:properties(), {atom(), atom()}, proplists:proplist(), pid()) ->
                       function().
-test_fun(Properties, {ConfirmMod, ConfirmFun}, MetaData) ->
+test_fun(Properties, {ConfirmMod, ConfirmFun}, MetaData, NotifyPid) ->
     fun() ->
             TestResult = ConfirmMod:ConfirmFun(Properties, MetaData),
-            ?MODULE:send_event(self(), test_result(TestResult))
+            ?MODULE:send_event(NotifyPid, test_result(TestResult))
     end.
 
 function_name(confirm, TestModule) ->
@@ -326,13 +338,14 @@ check_prereqs(Module) ->
                    [Module, P]) || {P, false} <- P2],
     lists:all(fun({_, Present}) -> Present end, P2).
 
-notify_fun() ->
+notify_fun(Pid) ->
     fun(X) ->
-            ?MODULE:send_event(self(), X)
+            ?MODULE:send_event(Pid, X)
     end.
 
-
-cleanup(#state{group_leader=OldGroupLeader}) ->
+cleanup(#state{group_leader=OldGroupLeader,
+               properties=Properties}) ->
+    node_manager:return_nodes(rt_properties:get(nodes, Properties)),
     riak_test_group_leader:tidy_up(OldGroupLeader).
 
 notify_executor(timeout, #state{test_module=Test,
@@ -340,6 +353,12 @@ notify_executor(timeout, #state{test_module=Test,
                                 end_time=End}) ->
     Duration = timer:now_diff(End, Start),
     Notification = {test_complete, Test, self(), {fail, timeout}, Duration},
+    riak_test_executor:send_event(Notification);
+notify_executor(fail, #state{test_module=Test,
+                                start_time=Start,
+                                end_time=End}) ->
+    Duration = timer:now_diff(End, Start),
+    Notification = {test_complete, Test, self(), {fail, unknown}, Duration},
     riak_test_executor:send_event(Notification);
 notify_executor(pass, #state{test_module=Test,
                              start_time=Start,

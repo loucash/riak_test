@@ -79,8 +79,10 @@ handle_sync_event(_Event, _From, _StateName, _State) ->
 handle_info(_Info, StateName, State) ->
     {next_state, StateName, State}.
 
-terminate(_Reason, _StateName, State) ->
+terminate(normal, _StateName, State) ->
     report_done(State),
+    ok;
+terminate(_Reason, _StateName, _State) ->
     ok.
 
 %% @doc this fsm has no special upgrade process
@@ -148,7 +150,7 @@ launch_test({nodes, Nodes}, State) ->
            runner_pids=Pids,
            running_tests=Running} = State,
     {NextTest, TestProps} = lists:keyfind(NextTest, 1, PropertiesList),
-    UpdTestProps = rt_properties:set(nodes, Nodes, TestProps),
+    {ok, UpdTestProps} = rt_properties:set(nodes, Nodes, TestProps),
     Pid = spawn_link(riak_test_runner, start, [NextTest, Backend, UpdTestProps]),
     UpdState = State#state{pending_tests=RestPending,
                            runner_pids=[Pid | Pids],
@@ -203,11 +205,11 @@ wait_for_completion(_Event, _From, _State) ->
 %%%===================================================================
 
 report_results(Test, Results, Duration, #state{notify_pid=NotifyPid}) ->
-    {self(), {test_result, {Test, Results, Duration}}} ! NotifyPid,
+    NotifyPid ! {self(), {test_result, {Test, Results, Duration}}},
      ok.
 
 report_done(#state{notify_pid=NotifyPid}) ->
-    {self(), done} ! NotifyPid,
+    NotifyPid ! {self(), done},
     ok.
 
 wait_for_completion_transition(State=#state{pending_tests=[],
@@ -219,7 +221,7 @@ wait_for_completion_transition(State) ->
     {next_state, request_nodes, State, 0}.
 
 launch_test_transition(State=#state{pending_tests=[]}) ->
-    {next_state, wait_for_completion, State, 0};
+    {next_state, wait_for_completion, State};
 launch_test_transition(State) ->
     {next_state, request_nodes, State, 0}.
 

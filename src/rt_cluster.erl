@@ -36,6 +36,9 @@
 
 -include("rt.hrl").
 
+-define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
+-define(DEV(N), list_to_atom(?DEVS(N))).
+
 %% @doc Default properties used if a riak_test module does not specify
 %% a custom properties function.
 -spec properties() -> rt_properties:properties().
@@ -50,7 +53,7 @@ setup(Properties, _MetaData) ->
         {ok, Clusters} ->
             maybe_wait_for_transfers(rt_properties:get(nodes, Properties),
                                      rt_properties:get(wait_for_transfers, Properties)),
-            rt_properties:set(clusters, Clusters);
+            rt_properties:set(clusters, Clusters, Properties);
         Error ->
             Error
     end.
@@ -139,11 +142,12 @@ maybe_wait_for_transfers(_Nodes, false) ->
     ok.
 
 join_cluster(Nodes) ->
+    NodeNames = [?DEV(Node) || Node <- Nodes],
     %% Ensure each node owns 100% of it's own ring
-    [?assertEqual([Node], rt_ring:owners_according_to(Node)) || Node <- Nodes],
+    [?assertEqual([Node], rt_ring:owners_according_to(Node)) || Node <- NodeNames],
 
     %% Join nodes
-    [Node1|OtherNodes] = Nodes,
+    [Node1|OtherNodes] = NodeNames,
     case OtherNodes of
         [] ->
             %% no other nodes, nothing to join/plan/commit
@@ -153,14 +157,14 @@ join_cluster(Nodes) ->
             %% large amount of redundant handoff done in a sequential join
             [rt_node:staged_join(Node, Node1) || Node <- OtherNodes],
             rt_node:plan_and_commit(Node1),
-            try_nodes_ready(Nodes, 3, 500)
+            try_nodes_ready(NodeNames, 3, 500)
     end,
 
-    ?assertEqual(ok, rt_node:wait_until_nodes_ready(Nodes)),
+    ?assertEqual(ok, rt_node:wait_until_nodes_ready(NodeNames)),
 
     %% Ensure each node owns a portion of the ring
-    rt_node:wait_until_nodes_agree_about_ownership(Nodes),
-    ?assertEqual(ok, rt:wait_until_no_pending_changes(Nodes)),
+    rt_node:wait_until_nodes_agree_about_ownership(NodeNames),
+    ?assertEqual(ok, rt:wait_until_no_pending_changes(NodeNames)),
     ok.
 
 try_nodes_ready([Node1 | _Nodes], 0, _SleepMs) ->

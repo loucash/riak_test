@@ -100,7 +100,6 @@ finalize(TestResults, Args) ->
     %% Coverage = rt_cover:maybe_write_coverage(all, CoverDir),
 
     node_manager:stop(),
-    riak_test_executor:stop(),
     Verbose = proplists:is_defined(verbose, Args),
     report_results(TestResults, Verbose),
 
@@ -132,28 +131,22 @@ print_help() ->
     halt(0).
 
 add_deps(Path) ->
-    io:format("Adding deps path: ~p~n", [Path]),
     {ok, Deps} = file:list_dir(Path),
     [code:add_path(lists:append([Path, "/", Dep, "/ebin"])) || Dep <- Deps],
     ok.
 
 test_setup(ParsedArgs) ->
-    %% Backend = proplists:get_value(backend, ParsedArgs, bitcask),
-    %% Prepare the test harness
-    {Nodes, VersionMap} = rt_harness:setup(),
-
-    %% Start the node manager
-    DefaultVersion = rt_config:get(default_version, "head"),
-    UpgradePath = proplists:get_value(upgrade_path, ParsedArgs),
-    %% This will currently block until the nodes are deployed with the
-    %% appropriate initial version
-    _ = node_manager:start_link(Nodes, VersionMap, DefaultVersion, upgrade_list(UpgradePath)),
-
     %% File output
     OutDir = proplists:get_value(outdir, ParsedArgs),
     ensure_dir(OutDir),
 
     lager_setup(OutDir),
+
+    %% Prepare the test harness
+    {Nodes, VersionMap} = rt_harness:setup(),
+
+    %% Start the node manager
+    _ = node_manager:start_link(Nodes, VersionMap),
 
     %% Ensure existence of scratch_dir
     case ensure_dir(rt_config:get(rt_scratch_dir) ++ "/test.file") of
@@ -271,7 +264,7 @@ ensure_dir(Dir) ->
     filelib:ensure_dir(Dir).
 
 lager_setup(undefined) ->
-    set_lager_env(rt_config:get(lager_level, info)),
+    set_lager_env(rt_config:get(lager_level, notice)),
     lager:start();
 lager_setup(_) ->
     set_lager_env(notice),
@@ -328,7 +321,7 @@ extract_test_names(Test, {CodePaths, TestNames}) ->
 which_tests_to_run(undefined, CommandLineTests) ->
     {Tests, NonTests} =
         lists:partition(fun is_runnable_test/1, CommandLineTests),
-    io:format("These modules arenot runnable tests: ~p~n",
+    io:format("These modules are not runnable tests: ~p~n",
                [[NTMod || {NTMod, _} <- NonTests]]),
     Tests;
 which_tests_to_run(Platform, []) ->
@@ -439,7 +432,7 @@ parse_webhook(Props) ->
             undefined
     end.
 
-test_summary_fun({test_result, {Test, pass, _}}, {{Pass, _Fail, _Skipped}, Width}) ->
+test_summary_fun({Test, pass, _}, {{Pass, _Fail, _Skipped}, Width}) ->
     TestNameLength = length(atom_to_list(Test)),
     UpdWidth =
         case TestNameLength > Width of
@@ -449,7 +442,7 @@ test_summary_fun({test_result, {Test, pass, _}}, {{Pass, _Fail, _Skipped}, Width
                 Width
         end,
     {{Pass+1, _Fail, _Skipped}, UpdWidth};
-test_summary_fun({test_result, {Test, {fail, _}, _}}, {{_Pass, Fail, _Skipped}, Width}) ->
+test_summary_fun({Test, {fail, _}, _}, {{_Pass, Fail, _Skipped}, Width}) ->
     TestNameLength = length(atom_to_list(Test)),
     UpdWidth =
         case TestNameLength > Width of
@@ -459,7 +452,7 @@ test_summary_fun({test_result, {Test, {fail, _}, _}}, {{_Pass, Fail, _Skipped}, 
                 Width
         end,
     {{_Pass, Fail+1, _Skipped}, UpdWidth};
-test_summary_fun({test_result, {Test, {skipped, _}, _}}, {{_Pass, _Fail, Skipped}, Width}) ->
+test_summary_fun({Test, {skipped, _}, _}, {{_Pass, _Fail, Skipped}, Width}) ->
     TestNameLength = length(atom_to_list(Test)),
     UpdWidth =
         case TestNameLength > Width of
@@ -470,8 +463,8 @@ test_summary_fun({test_result, {Test, {skipped, _}, _}}, {{_Pass, _Fail, Skipped
         end,
     {{_Pass, _Fail, Skipped+1}, UpdWidth}.
 
-print_test_result({test_result, {Test, Result, Duration}}, Width) ->
-    TestString = list_to_atom(Test),
+print_test_result({Test, Result, Duration}, Width) ->
+    TestString = atom_to_list(Test),
     case Result of
         {Status, Reason} ->
             io:format("~s: ~s ~p  ~B~n", [string:left(TestString, Width), Status, Reason, Duration]);

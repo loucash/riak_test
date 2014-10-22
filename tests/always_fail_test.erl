@@ -4,4 +4,5 @@
 
 -spec confirm(rt_properties:properties(), proplists:proplist()) -> pass | fail.
 confirm(_Properties, _MD) ->
+    lager:info("Running test confirm function"),
     fail.

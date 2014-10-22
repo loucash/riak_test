@@ -21,7 +21,7 @@
 -module(test_harness).
 
 %% -callback start(Node :: node(), Version :: string()) -> 'ok'.
--callback stop(Node :: node()) -> 'ok'.
+%% -callback stop(Node :: node()) -> 'ok'.
 %% -callback deploy_clusters(ClusterConfigs :: list()) -> list().
 -callback clean_data_dir(Nodes :: list(), SubDir :: string()) -> 'ok'.
 -callback spawn_cmd(Cmd :: string()) -> Port :: pos_integer().

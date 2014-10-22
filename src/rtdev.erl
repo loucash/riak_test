@@ -19,11 +19,12 @@
 %% -------------------------------------------------------------------
 
 -module(rtdev).
--behaviour(test_harness).
+%% -behaviour(test_harness).
 -export([start/2,
-         stop/1,
+         stop/2,
          deploy_clusters/1,
          clean_data_dir/2,
+         clean_data_dir/3,
          spawn_cmd/1,
          spawn_cmd/2,
          cmd/1,
@@ -45,7 +46,8 @@
          update_app_config/3,
          teardown/0,
          set_conf/2,
-         set_advanced_conf/2]).
+         set_advanced_conf/2,
+         rm_dir/1]).
 
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
@@ -53,17 +55,17 @@
 -define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
 -define(DEV(N), list_to_atom(?DEVS(N))).
 -define(PATH, (rt_config:get(root_path))).
--define(SCRATCH_DIR, (rt_config:get(rt_scatch_dir))).
+-define(SCRATCH_DIR, (rt_config:get(rt_scratch_dir))).
 
 get_deps() ->
     lists:flatten(io_lib:format("~s/dev1/lib", [filename:join(?PATH, "head")])).
 
 riakcmd(Path, N, Cmd) ->
     ExecName = rt_config:get(exec_name, "riak"),
-    io_lib:format("~s/dev/dev~b/bin/~s ~s", [Path, N, ExecName, Cmd]).
+    io_lib:format("~s/~s/bin/~s ~s", [Path, N, ExecName, Cmd]).
 
 riakreplcmd(Path, N, Cmd) ->
-    io_lib:format("~s/dev/dev~b/bin/riak-repl ~s", [Path, N, Cmd]).
+    io_lib:format("~s/~s/bin/riak-repl ~s", [Path, N, Cmd]).
 
 gitcmd(Path, Cmd) ->
     io_lib:format("git --git-dir=\"~s/.git\" --work-tree=\"~s/\" ~s",
@@ -78,7 +80,7 @@ riak_admin_cmd(Path, N, Args) ->
                   end, Args),
     ArgStr = string:join(Quoted, " "),
     ExecName = rt_config:get(exec_name, "riak"),
-    io_lib:format("~s/dev/dev~b/bin/~s-admin ~s", [Path, N, ExecName, ArgStr]).
+    io_lib:format("~s/~s/bin/~s-admin ~s", [Path, N, ExecName, ArgStr]).
 
 run_git(Path, Cmd) ->
     lager:info("Running: ~s", [gitcmd(Path, Cmd)]),
@@ -86,11 +88,11 @@ run_git(Path, Cmd) ->
     Out.
 
 run_riak(Node, Version, "start") ->
-    Path = rt_config:get(root_path) ++ Version,
-    RiakCmd = riakcmd(Path, Node, "start"),
+    VersionPath = filename:join(?PATH, Version),
+    RiakCmd = riakcmd(VersionPath, Node, "start"),
     lager:info("Running: ~s", [RiakCmd]),
     CmdRes = os:cmd(RiakCmd),
-    rt_cover:maybe_start_on_node(?DEV(Node), Version),
+    %% rt_cover:maybe_start_on_node(?DEV(Node), Version),
     %% Intercepts may load code on top of the cover compiled
     %% modules. We'll just get no coverage info then.
     case rt_intercept:are_intercepts_loaded(?DEV(Node)) of
@@ -101,10 +103,12 @@ run_riak(Node, Version, "start") ->
     end,
     CmdRes;
 run_riak(Node, Version, "stop") ->
-    rt_cover:maybe_stop_on_node(?DEV(Node)),
-    os:cmd(riakcmd(rt_config:get(root_path) ++ Version, Node, "stop"));
+    VersionPath = filename:join(?PATH, Version),
+    %% rt_cover:maybe_stop_on_node(?DEV(Node)),
+    os:cmd(riakcmd(VersionPath, Node, "stop"));
 run_riak(Node, Version, Cmd) ->
-    os:cmd(riakcmd(rt_config:get(root_path) ++ Version, Node, Cmd)).
+    VersionPath = filename:join(?PATH, Version),
+    os:cmd(riakcmd(VersionPath, Node, Cmd)).
 
 run_riak_repl(N, Path, Cmd) ->
     lager:info("Running: ~s", [riakcmd(Path, N, Cmd)]),
@@ -129,7 +133,8 @@ harness_nodes(Version) ->
     VersionPath = filename:join(?PATH, Version),
     case file:list_dir(VersionPath) of
         {ok, VersionFiles} ->
-            [Node || Node <- VersionFiles,
+            SortedVersionFiles = lists:sort(VersionFiles),
+            [Node || Node <- SortedVersionFiles,
                      filelib:is_dir(filename:join(VersionPath, Node))];
         {error, _} ->
             []
@@ -139,7 +144,7 @@ so_fresh_so_clean(VersionMap) ->
     %% make sure we stop any cover processes on any nodes otherwise,
     %% if the next test boots a legacy node we'll end up with cover
     %% incompatabilities and crash the cover server
-    rt_cover:maybe_stop_on_nodes(),
+    %% rt_cover:maybe_stop_on_nodes(),
     %% Path = relpath(root),
     %% Stop all discoverable nodes, not just nodes we'll be using for
     %% this test.
@@ -163,17 +168,17 @@ so_fresh_so_clean(VersionMap) ->
                     %% the extra slashes will be pruned by filename:join, but this
                     %% ensures that there will be at least one between "/tmp" and Dir
                     %% TODO: Double check this is correct
-                    PipeDir = filename:join(["/tmp", ?PATH, Version]),
+                    PipeDir = filename:join("/tmp" ++ ?PATH, Version),
                     {0, _} = cmd("rm -rf " ++ PipeDir)
             end, VersionMap),
     ok.
 
 setup_harness() ->
     %% Get node names and populate node map
-    io:format("Versions: ~p~n", [versions()]),
     VersionMap = [{Version, harness_nodes(Version)} || Version <- versions()],
     Nodes = harness_nodes(rt_config:get(default_version, "head")),
     so_fresh_so_clean(VersionMap),
+    rm_dir(filename:join(?SCRATCH_DIR, "gc")),
     rt_harness_util:setup_harness(VersionMap, Nodes).
 
 relpath(Vsn) ->
@@ -194,7 +199,7 @@ relpath(_, _) ->
 
 upgrade(Node, CurrentVersion, NewVersion, Config) ->
     lager:info("Upgrading ~p : ~p -> ~p", [Node, CurrentVersion, NewVersion]),
-    stop(Node),
+    stop(Node, CurrentVersion),
     rt:wait_until_unpingable(Node),
     CurrentPath = filename:join([?PATH, CurrentVersion, Node]),
     NewPath = filename:join([?PATH, NewVersion, Node]),
@@ -287,11 +292,13 @@ all_the_app_configs(DevPath) ->
 %%     lager:info("rtdev:update_app_config(all, ~p)", [Config]),
 %%     [ update_app_config(DevPath, Config) || DevPath <- devpaths()];
 update_app_config(Node, Version, Config) ->
-    Path = ?PATH ++ Version,
+    VersionPath = filename:join(?PATH, Version),
     FileFormatString = "~s/~s/etc/~s.config",
+    AppConfigFile = io_lib:format(FileFormatString,
+                                  [VersionPath, Node, "app"]),
+    AdvConfigFile = io_lib:format(FileFormatString,
+                                  [VersionPath, Node, "advanced"]),
 
-    AppConfigFile = io_lib:format(FileFormatString, [Path, Node, "app"]),
-    AdvConfigFile = io_lib:format(FileFormatString, [Path, Node, "advanced"]),
     %% If there's an app.config, do it old style
     %% if not, use cuttlefish's advanced.config
     case filelib:is_file(AppConfigFile) of
@@ -300,12 +307,9 @@ update_app_config(Node, Version, Config) ->
         _ ->
             update_app_config_file(AdvConfigFile, Config)
     end.
-%% update_app_config(DevPath, Config) ->
-%%     [update_app_config_file(AppConfig, Config) ||
-%%         AppConfig <- all_the_app_configs(DevPath)].
 
 update_app_config_file(ConfigFile, Config) ->
-    lager:info("rtdev:update_app_config_file(~s, ~p)", [ConfigFile, Config]),
+    lager:debug("rtdev:update_app_config_file(~s, ~p)", [ConfigFile, Config]),
 
     BaseConfig = case file:consult(ConfigFile) of
         {ok, [ValidConfig]} ->
@@ -400,11 +404,20 @@ clean_data_dir(Nodes, SubDir) when is_list(Nodes) ->
 %% move the directory to a GC subdirectory in the riak_test scratch
 %% directory, recreate the subdirectory, and asynchronously remove the
 %% files from the scratch directory.
+clean_data_dir(Node, Version, "") ->
+    DataDir = filename:join([?PATH, Version, Node, "data"]),
+    TmpDir = filename:join([?SCRATCH_DIR, "gc", Version, Node]),
+    filelib:ensure_dir(filename:join(TmpDir, "child")),
+    mv_dir(DataDir, TmpDir),
+    Pid = spawn(?MODULE, rm_dir, [TmpDir]),
+    mk_dir(DataDir),
+    Pid;
 clean_data_dir(Node, Version, SubDir) ->
     DataDir = filename:join([?PATH, Version, Node, "data", SubDir]),
-    TmpDir = filename:join([?SCRATCH_DIR, "gc", Version, Node, "data", SubDir]),
+    TmpDir = filename:join([?SCRATCH_DIR, "gc", Version, Node, "data"]),
+    filelib:ensure_dir(filename:join(TmpDir, "child")),
     mv_dir(DataDir, TmpDir),
-    Pid = spawn(?MODULE, rm_dir, TmpDir),
+    Pid = spawn(?MODULE, rm_dir, [TmpDir]),
     mk_dir(DataDir),
     Pid.
 
@@ -525,7 +538,7 @@ gen_stop_fun(Path, Timeout) ->
             net_kernel:hidden_connect_node(NodeName),
             case rpc:call(NodeName, os, getpid, []) of
                 PidStr when is_list(PidStr) ->
-                    lager:info("Preparing to stop node ~p (process ID ~s) with init:stop/0...",
+                    lager:debug("Preparing to stop node ~p (process ID ~s) with init:stop/0...",
                                [NodePath, PidStr]),
                     rpc:call(NodeName, init, stop, []),
                     %% If init:stop/0 fails here, the wait_for_pid/2 call
@@ -534,7 +547,7 @@ gen_stop_fun(Path, Timeout) ->
                     wait_for_pid(PidStr, Timeout);
                 BadRpc ->
                     Cmd =  filename:join([Path, Node, "bin/riak stop"]),
-                    lager:info("RPC to node ~p returned ~p, will try stop anyway... ~s",
+                    lager:debug("RPC to node ~p returned ~p, will try stop anyway... ~s",
                                [NodeName, BadRpc, Cmd]),
                     Output = os:cmd(Cmd),
                     Status = case Output of
@@ -550,7 +563,7 @@ gen_stop_fun(Path, Timeout) ->
                                  _ ->
                                      "wasn't running"
                              end,
-                    lager:info("Stopped node ~p, stop status: ~s.", [NodePath, Status])
+                    lager:debug("Stopped node ~p, stop status: ~s.", [NodePath, Status])
             end
     end.
 
@@ -563,13 +576,13 @@ kill_stragglers(Path, Timeout) ->
                        nomatch ->
                            Acc;
                        {match,[Pid]} ->
-                           lager:info("Process ~s still running, killing...",
+                           lager:debug("Process ~s still running, killing...",
                                       [Pid]),
                            os:cmd("kill -15 "++Pid),
                            case wait_for_pid(Pid, Timeout) of
                                ok -> ok;
                                fail ->
-                                   lager:info("Process ~s still hasn't stopped, "
+                                   lager:debug("Process ~s still hasn't stopped, "
                                               "resorting to kill -9...", [Pid]),
                                    os:cmd("kill -9 "++Pid)
                            end,
@@ -596,26 +609,29 @@ stop_nodes(Path, Nodes) ->
         {error,{already_started,_}} ->
             ok
     end,
-    lager:info("Trying to obtain node shutdown_time via RPC..."),
+    lager:debug("Trying to obtain node shutdown_time via RPC..."),
     Tmout = case rpc:call(?DEV(hd(Nodes)), init, get_argument, [shutdown_time]) of
                 {ok,[[Tm]]} -> list_to_integer(Tm)+10000;
                 _ -> 20000
             end,
-    lager:info("Using node shutdown_time of ~w", [Tmout]),
+    lager:debug("Using node shutdown_time of ~w", [Tmout]),
     rt:pmap(gen_stop_fun(Path, Tmout), Nodes),
     kill_stragglers(Path, Tmout),
     ok.
 
-stop(Node) ->
-    RiakPid = rpc:call(Node, os, getpid, []),
-    N = node_id(Node),
-    rt_cover:maybe_stop_on_node(Node),
-    run_riak(N, relpath(node_version(N)), "stop"),
-    F = fun(_N) ->
-            os:cmd("kill -0 " ++ RiakPid) =/= []
-    end,
-    ?assertEqual(ok, rt:wait_until(Node, F)),
-    ok.
+stop(Node, Version) ->
+    case rpc:call(?DEV(Node), os, getpid, []) of
+        {badrpc, nodedown} ->
+            ok;
+        RiakPid ->
+            %% rt_cover:maybe_stop_on_node(Node),
+            run_riak(Node, Version, "stop"),
+            F = fun(_N) ->
+                        os:cmd("kill -0 " ++ RiakPid) =/= []
+                end,
+            ?assertEqual(ok, rt:wait_until(?DEV(Node), F)),
+            ok
+    end.
 
 start(Node, Version) ->
     %% N = node_id(Node),
@@ -635,7 +651,7 @@ interactive(Node, Command, Exp) ->
     N = node_id(Node),
     Path = relpath(node_version(N)),
     Cmd = riakcmd(Path, N, Command),
-    lager:info("Opening a port for riak ~s.", [Command]),
+    lager:debug("Opening a port for riak ~s.", [Command]),
     lager:debug("Calling open_port with cmd ~s", [binary_to_list(iolist_to_binary(Cmd))]),
     P = open_port({spawn, binary_to_list(iolist_to_binary(Cmd))},
                   [stream, use_stdio, exit_status, binary, stderr_to_stdout]),
@@ -787,7 +803,7 @@ set_backend(Backend) ->
     set_backend(Backend, []).
 
 set_backend(Backend, OtherOpts) ->
-    lager:info("rtdev:set_backend(~p, ~p)", [Backend, OtherOpts]),
+    lager:debug("rtdev:set_backend(~p, ~p)", [Backend, OtherOpts]),
     Opts = [{storage_backend, Backend} | OtherOpts],
     update_app_config(all, version_here, [{riak_kv, Opts}]),
     get_backends().
@@ -799,7 +815,7 @@ get_version() ->
     end.
 
 teardown() ->
-    rt_cover:maybe_stop_on_nodes(),
+    %% rt_cover:maybe_stop_on_nodes(),
     %% Stop all discoverable nodes, not just nodes we'll be using for this test.
     %% rt:pmap(fun(X) -> stop_all(X ++ "/dev") end, devpaths()).
     ok.

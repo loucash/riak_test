@@ -22,7 +22,7 @@
 -record(state, {nodes :: [string()],
                 nodes_available :: [string()],
                 nodes_deployed=[] :: [string()],
-                initial_version :: string(),
+                deployed_versions=[] :: [{string(), string()}],
                 version_map :: [{string(), [string()]}]}).
 
 %%%===================================================================
@@ -31,7 +31,7 @@
 
 start_link(Nodes, VersionMap) ->
     Args = [Nodes, VersionMap],
-    gen_server:start_link({local, ?MODULE}, Args, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Args, []).
 
 -spec reserve_nodes(pos_integer(), [string()], function()) -> ok.
 reserve_nodes(NodeCount, Versions, NotifyFun) ->
@@ -39,11 +39,11 @@ reserve_nodes(NodeCount, Versions, NotifyFun) ->
 
 -spec deploy_nodes([string()], string(), term(), list(atom()), function()) -> ok.
 deploy_nodes(Nodes, Version, Config, Services, NotifyFun) ->
-  gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, Services, NotifyFun}).
+    gen_server:cast(?MODULE, {deploy_nodes, Nodes, Version, Config, Services, NotifyFun}).
 
 -spec upgrade_nodes([string()], string(), string(), term(), function()) -> ok.
 upgrade_nodes(Nodes, CurrentVersion, NewVersion, Config, NotifyFun) ->
-  gen_server:cast(?MODULE, {deploy_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}).
+    gen_server:cast(?MODULE, {deploy_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}).
 
 -spec return_nodes([string()]) -> ok.
 return_nodes(Nodes) ->
@@ -61,7 +61,6 @@ stop() ->
 %%% gen_server callbacks
 %%%===================================================================
 
-%% Initial node deployment is deferred until the first call to
 init([Nodes, VersionMap]) ->
     SortedNodes = lists:sort(Nodes),
     {ok, #state{nodes=SortedNodes,
@@ -79,22 +78,30 @@ handle_call(stop, _From, State) ->
 handle_cast({reserve_nodes, Count, Versions, NotifyFun}, State) ->
     {Result, UpdState} =
         reserve(Count, Versions, State),
-    NotifyFun(Result),
+    NotifyFun({nodes, Result}),
     {noreply, UpdState};
 handle_cast({deploy_nodes, Nodes, Version, Config, Services, NotifyFun}, State) ->
     Result = deploy(Nodes, Version, Config, Services),
+    DeployedVersions = State#state.deployed_versions,
+    UpdDeployedVersions = update_deployed_versions(deploy, Nodes, Version, DeployedVersions),
     NotifyFun({nodes_deployed, Result}),
-    {noreply, State};
+    {noreply, State#state{deployed_versions=UpdDeployedVersions}};
 handle_cast({upgrade_nodes, Nodes, CurrentVersion, NewVersion, Config, NotifyFun}, State) ->
     Result = upgrade(Nodes, CurrentVersion, NewVersion, Config),
+    DeployedVersions = State#state.deployed_versions,
+    UpdDeployedVersions = update_deployed_versions(upgrade, Nodes, NewVersion, DeployedVersions),
     NotifyFun({nodes_upgraded, Result}),
-    {noreply, State};
+    {noreply, State#state{deployed_versions=UpdDeployedVersions}};
 handle_cast({return_nodes, Nodes}, State) ->
     %% Stop nodes and clean data dirs so they are ready for next use.
-    [stop_and_clean(Node, State#state.initial_version) || Node <- Nodes],
     NodesAvailable = State#state.nodes_available,
+    DeployedVersions = State#state.deployed_versions,
+    stop_and_clean(Nodes, DeployedVersions, false),
     NodesNowAvailable = lists:merge(lists:sort(Nodes), NodesAvailable),
-    {noreply, State#state{nodes_available=NodesNowAvailable}};
+
+    UpdDeployedVersions = update_deployed_versions(return, Nodes, undefined, DeployedVersions),
+    {noreply, State#state{nodes_available=NodesNowAvailable,
+                          deployed_versions=UpdDeployedVersions}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -103,7 +110,9 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, State) ->
     %% Stop and reset all deployed nodes
-    stop_and_clean(State#state.nodes_deployed, State#state.initial_version),
+    stop_and_clean(State#state.nodes_deployed,
+                   State#state.deployed_versions,
+                   true),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -113,9 +122,25 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-stop_and_clean(Node, Version) ->
-    rt_node:stop_and_wait(Node),
-    rt_node:clean_data_dir(Node, Version).
+stop_and_clean(Nodes, DeployedVersions, Wait) ->
+    [begin
+         case version_deployed(Node, DeployedVersions) of
+             undefined ->
+                 ok;
+             Version ->
+                 rt_node:stop_and_wait(Node, Version),
+                 wait_for_cleaner(rt_node:clean_data_dir(Node, Version), Wait)
+         end
+     end || Node <- Nodes].
+
+wait_for_cleaner(Pid, true) ->
+    WaitFun =
+        fun() ->
+                not is_process_alive(Pid)
+        end,
+    rt:wait_until(WaitFun);
+wait_for_cleaner(_, false) ->
+    ok.
 
 %% stop_clean_start(Node, Version) ->
 %%     stop_and_clean(Node, Version),
@@ -128,27 +153,27 @@ reserve(Count, Versions, State=#state{nodes_available=NodesAvailable,
                                       nodes_deployed=NodesDeployed,
                                       version_map=VersionMap})
   when Count =:= length(NodesAvailable) ->
-        case versions_available(Count, Versions, VersionMap) of
-            true ->
-                UpdNodesDeployed = lists:sort(NodesDeployed ++ NodesAvailable),
-                {NodesAvailable, State#state{nodes_available=[],
-                                             nodes_deployed=UpdNodesDeployed}};
-            false ->
-                {insufficient_versions_available, State}
-        end;
+    case versions_available(Count, Versions, VersionMap) of
+        true ->
+            UpdNodesDeployed = lists:sort(NodesDeployed ++ NodesAvailable),
+            {NodesAvailable, State#state{nodes_available=[],
+                                         nodes_deployed=UpdNodesDeployed}};
+        false ->
+            {insufficient_versions_available, State}
+    end;
 reserve(Count, Versions, State=#state{nodes_available=NodesAvailable,
                                       nodes_deployed=NodesDeployed,
                                       version_map=VersionMap}) ->
-        case versions_available(Count, Versions, VersionMap) of
-            true ->
-                {Reserved, UpdNodesAvailable} = lists:split(Count, NodesAvailable),
-                UpdNodesDeployed = lists:sort(NodesDeployed ++ Reserved),
-                UpdState = State#state{nodes_available=UpdNodesAvailable,
-                                       nodes_deployed=UpdNodesDeployed},
-                {Reserved, UpdState};
-            false ->
-                {insufficient_versions_available, State}
-        end.
+    case versions_available(Count, Versions, VersionMap) of
+        true ->
+            {Reserved, UpdNodesAvailable} = lists:split(Count, NodesAvailable),
+            UpdNodesDeployed = lists:sort(NodesDeployed ++ Reserved),
+            UpdState = State#state{nodes_available=UpdNodesAvailable,
+                                   nodes_deployed=UpdNodesDeployed},
+            {Reserved, UpdState};
+        false ->
+            {insufficient_versions_available, State}
+    end.
 
 versions_available(Count, Versions, VersionMap) ->
     lists:all(version_available_fun(Count, VersionMap), Versions).
@@ -171,3 +196,33 @@ deploy(Nodes, Version, Config, Services) ->
 upgrade(Nodes, CurrentVersion, NewVersion, Config) ->
     [rt_node:upgrade(Node, CurrentVersion, NewVersion, Config) ||
         Node <- Nodes].
+
+update_deployed_versions(deploy, Nodes, Version, DeployedVersions) ->
+    {_, UpdDeployedVersions} = lists:foldl(fun add_deployed_version/2,
+                                           {Version, DeployedVersions},
+                                           Nodes),
+    UpdDeployedVersions;
+update_deployed_versions(upgrade, Nodes, Version, DeployedVersions) ->
+    {_, UpdDeployedVersions} = lists:foldl(fun replace_deployed_version/2,
+                                           {Version, DeployedVersions},
+                                           Nodes),
+    UpdDeployedVersions;
+update_deployed_versions(return, Nodes, _, DeployedVersions) ->
+    lists:foldl(fun remove_deployed_version/2, DeployedVersions, Nodes).
+
+add_deployed_version(Node, {Version, DeployedVersions}) ->
+    {Version, [{Node, Version} | DeployedVersions]}.
+
+replace_deployed_version(Node, {Version, DeployedVersions}) ->
+    {Version, lists:keyreplace(Node, 1, DeployedVersions, {Node, Version})}.
+
+remove_deployed_version(Node, DeployedVersions) ->
+    lists:keydelete(Node, 1, DeployedVersions).
+
+version_deployed(Node, DeployedVersions) ->
+    case lists:keyfind(Node, 1, DeployedVersions) of
+        {Node, Version} ->
+            Version;
+        false ->
+            undefined
+    end.

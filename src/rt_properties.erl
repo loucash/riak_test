@@ -32,7 +32,7 @@
           metadata=[] :: proplists:proplist(),
           properties=[] :: proplists:proplist(),
           rolling_upgrade=false :: boolean(),
-          start_version=head :: atom(),
+          start_version="head" :: string(),
           upgrade_path :: [string()],
           wait_for_transfers=false :: boolean(),
           valid_backends=all :: all | [atom()],

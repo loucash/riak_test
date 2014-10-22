@@ -25,10 +25,10 @@
 
 -define(HARNESS_MODULE, (rt_config:get(rt_harness))).
 
--export([start/1,
-         stop/1,
+-export([start/2,
+         stop/2,
          deploy_clusters/1,
-         clean_data_dir/2,
+         clean_data_dir/3,
          deploy_nodes/1,
          spawn_cmd/1,
          spawn_cmd/2,
@@ -54,17 +54,17 @@
          set_conf/2,
          set_advanced_conf/2]).
 
-start(Node) ->
-    ?HARNESS_MODULE:start(Node).
+start(Node, Version) ->
+    ?HARNESS_MODULE:start(Node, Version).
 
-stop(Node) ->
-    ?HARNESS_MODULE:stop(Node).
+stop(Node, Version) ->
+    ?HARNESS_MODULE:stop(Node, Version).
 
 deploy_clusters(ClusterConfigs) ->
     ?HARNESS_MODULE:deploy_clusters(ClusterConfigs).
 
-clean_data_dir(Nodes, SubDir) ->
-    ?HARNESS_MODULE:clean_data_dir(Nodes, SubDir).
+clean_data_dir(Node, Version, SubDir) ->
+    ?HARNESS_MODULE:clean_data_dir(Node, Version, SubDir).
 
 spawn_cmd(Cmd) ->
     ?HARNESS_MODULE:spawn_cmd(Cmd).

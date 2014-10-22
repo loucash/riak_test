@@ -24,8 +24,8 @@
 -export([start/1,
          start_and_wait/1,
          async_start/1,
-         stop/1,
-         stop_and_wait/1,
+         stop/2,
+         stop_and_wait/2,
          upgrade/4,
          is_ready/1,
          %% slow_upgrade/3,
@@ -44,6 +44,9 @@
          wait_until_nodes_agree_about_ownership/1,
          is_pingable/1,
          clean_data_dir/2]).
+
+-define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
+-define(DEV(N), list_to_atom(?DEVS(N))).
 
 clean_data_dir(Node, Version) ->
     clean_data_dir(Node, Version, "").
@@ -64,16 +67,16 @@ async_start(Node) ->
     spawn(fun() -> start(Node) end).
 
 %% @doc Stop the specified Riak `Node'.
-stop(Node) ->
+stop(Node, Version) ->
     lager:info("Stopping riak on ~p", [Node]),
     %% timer:sleep(10000), %% I know, I know!
-    rt_harness:stop(Node).
+    rt_harness:stop(Node, Version).
     %%rpc:call(Node, init, stop, []).
 
 %% @doc Stop the specified Riak `Node' and wait until it is not pingable
-stop_and_wait(Node) ->
-    stop(Node),
-    ?assertEqual(ok, rt:wait_until_unpingable(Node)).
+stop_and_wait(Node, Version) ->
+    stop(Node, Version),
+    ?assertEqual(ok, rt:wait_until_unpingable(?DEV(Node))).
 
 %% %% @doc Upgrade a Riak `Node' to the specified `NewVersion'.
 %% upgrade(Node, NewVersion) ->
@@ -118,7 +121,11 @@ plan_and_commit(Node) ->
     lager:info("planning and commiting cluster join"),
     case rpc:call(Node, riak_core_claimant, plan, []) of
         {error, ring_not_ready} ->
-            lager:info("plan: ring not ready"),
+            lager:info("plan: ring not ready on ~p", [Node]),
+            timer:sleep(100),
+            plan_and_commit(Node);
+        {badrpc, _} ->
+            lager:info("plan: ring not ready on ~p", [Node]),
             timer:sleep(100),
             plan_and_commit(Node);
         {ok, _, _} ->
