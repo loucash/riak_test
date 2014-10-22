@@ -137,7 +137,7 @@ maybe_join_clusters(_Clusters, false) ->
 
 maybe_wait_for_transfers(Nodes, true) ->
     lager:info("Waiting for transfers"),
-    rt:wait_until_transfers_complete(Nodes);
+    rt:wait_until_transfers_complete([?DEV(N) || N <- Nodes]);
 maybe_wait_for_transfers(_Nodes, false) ->
     ok.
 

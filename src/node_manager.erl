@@ -142,10 +142,6 @@ wait_for_cleaner(Pid, true) ->
 wait_for_cleaner(_, false) ->
     ok.
 
-%% stop_clean_start(Node, Version) ->
-%%     stop_and_clean(Node, Version),
-%%     rt_node:start(Node, Version).
-
 reserve(Count, _Versions, State=#state{nodes_available=NodesAvailable})
   when Count > length(NodesAvailable) ->
     {not_enough_nodes, State};

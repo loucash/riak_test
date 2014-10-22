@@ -104,6 +104,7 @@ gather_properties(_Event, _State) ->
 request_nodes(timeout, State) ->
     #state{pending_tests=[NextTest | _],
            test_properties=PropertiesList} = State,
+    lager:notice("Starting next test: ~p", [NextTest]),
     %% Find the properties for the next pending test
     {NextTest, TestProps} = lists:keyfind(NextTest, 1, PropertiesList),
     %% Send async request to node manager

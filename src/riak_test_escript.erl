@@ -27,13 +27,20 @@
 -export([add_deps/1]).
 
 main(Args) ->
-    {ParsedArgs, HarnessArgs, Tests} = prepare(Args),
+    {ParsedArgs, HarnessArgs, Tests, _} = prepare(Args),
     Results = execute(Tests, ParsedArgs, HarnessArgs),
     finalize(Results, ParsedArgs).
 
 prepare(Args) ->
-    {ParsedArgs, _, Tests} = ParseResults = parse_args(Args),
+    {ParsedArgs, _, Tests, NonTests} = ParseResults = parse_args(Args),
     io:format("Tests to run: ~p~n", [Tests]),
+    case NonTests of
+        [] ->
+            ok;
+        _ ->
+            io:format("These modules are not runnable tests: ~p~n",
+                      [[NTMod || {NTMod, _} <- NonTests]])
+    end,
     ok = erlang_setup(ParsedArgs),
     ok = test_setup(ParsedArgs),
     ParseResults.
@@ -192,10 +199,10 @@ help_or_parse_tests(ParsedArgs, HarnessArgs, false) ->
     load_initial_config(ParsedArgs),
 
     TestData = compose_test_data(ParsedArgs),
-    Tests = which_tests_to_run(report(ParsedArgs), TestData),
+    {Tests, NonTests} = which_tests_to_run(report(ParsedArgs), TestData),
     Offset = rt_config:get(offset, undefined),
     Workers = rt_config:get(workers, undefined),
-    shuffle_tests(ParsedArgs, HarnessArgs, Tests, Offset, Workers).
+    shuffle_tests(ParsedArgs, HarnessArgs, Tests, NonTests, Offset, Workers).
 
 load_initial_config(ParsedArgs) ->
     %% Loads application defaults
@@ -205,14 +212,14 @@ load_initial_config(ParsedArgs) ->
     rt_config:load(proplists:get_value(config, ParsedArgs),
                    proplists:get_value(file, ParsedArgs)).
 
-shuffle_tests(_, _, [], _, _) ->
-    lager:warning("No tests are scheduled to run"),
-    init:stop(1);
-shuffle_tests(ParsedArgs, HarnessArgs, Tests, undefined, _) ->
-    {ParsedArgs, HarnessArgs, Tests};
-shuffle_tests(ParsedArgs, HarnessArgs, Tests, _, undefined) ->
-    {ParsedArgs, HarnessArgs, Tests};
-shuffle_tests(ParsedArgs, HarnessArgs, Tests, Offset, Workers) ->
+shuffle_tests(_, _, [], _, _, _) ->
+    io:format("No tests are scheduled to run~n"),
+    halt(1);
+shuffle_tests(ParsedArgs, HarnessArgs, Tests, NonTests, undefined, _) ->
+    {ParsedArgs, HarnessArgs, Tests, NonTests};
+shuffle_tests(ParsedArgs, HarnessArgs, Tests, NonTests, _, undefined) ->
+    {ParsedArgs, HarnessArgs, Tests, NonTests};
+shuffle_tests(ParsedArgs, HarnessArgs, Tests, NonTests, Offset, Workers) ->
     TestCount = length(Tests),
     %% Avoid dividing by zero, computers hate that
     Denominator = case Workers rem (TestCount+1) of
@@ -223,7 +230,7 @@ shuffle_tests(ParsedArgs, HarnessArgs, Tests, Offset, Workers) ->
     {TestA, TestB} = lists:split(ActualOffset, Tests),
     lager:info("Offsetting ~b tests by ~b (~b workers, ~b offset)",
                [TestCount, ActualOffset, Workers, Offset]),
-    {ParsedArgs, HarnessArgs, TestB ++ TestA}.
+    {ParsedArgs, HarnessArgs, TestB ++ TestA, NonTests}.
 
 erlang_setup(_ParsedArgs) ->
     register(riak_test, self()),
@@ -319,22 +326,13 @@ extract_test_names(Test, {CodePaths, TestNames}) ->
      [list_to_atom(filename:rootname(filename:basename(Test))) | TestNames]}.
 
 which_tests_to_run(undefined, CommandLineTests) ->
-    {Tests, NonTests} =
-        lists:partition(fun is_runnable_test/1, CommandLineTests),
-    io:format("These modules are not runnable tests: ~p~n",
-               [[NTMod || {NTMod, _} <- NonTests]]),
-    Tests;
+    lists:partition(fun is_runnable_test/1, CommandLineTests);
 which_tests_to_run(Platform, []) ->
     giddyup:get_suite(Platform);
 which_tests_to_run(Platform, CommandLineTests) ->
     Suite = filter_zip_suite(Platform, CommandLineTests),
-    {Tests, NonTests} =
-        lists:partition(fun is_runnable_test/1,
-                        lists:foldr(fun filter_merge_tests/2, [], Suite)),
-
-    lager:info("These modules are not runnable tests: ~p",
-               [[NTMod || {NTMod, _} <- NonTests]]),
-    Tests.
+    lists:partition(fun is_runnable_test/1,
+                    lists:foldr(fun filter_merge_tests/2, [], Suite)).
 
 filter_zip_suite(Platform, CommandLineTests) ->
     [ {SModule, SMeta, CMeta} || {SModule, SMeta} <- giddyup:get_suite(Platform),

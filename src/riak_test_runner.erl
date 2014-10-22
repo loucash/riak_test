@@ -74,10 +74,9 @@
 %% @doc Start the test executor
 start(TestModule, Backend, Properties) ->
     Args = [TestModule, Backend, Properties],
-    gen_fsm:start_link({local, ?MODULE}, ?MODULE, Args, []).
+    gen_fsm:start_link(?MODULE, Args, []).
 
 send_event(Pid, Msg) ->
-    lager:info("Sending ~p to ~p", [Msg, Pid]),
     gen_fsm:send_event(Pid, Msg).
 
 %% @doc Stop the executor
@@ -199,13 +198,8 @@ execute({nodes_deployed, _}, State) ->
                 State#state{start_time=StartTime}
         end,
     {next_state, wait_for_completion, UpdState, TestTimeout};
-execute(Event, _State) ->
-    lager:info("Got unexepcted event in execute state: ~p", [Event]),
+execute(_Event, _State) ->
     {next_state, execute, _State}.
-
-%% Simple function to hide the details of the message wrapping
-test_result(Result) ->
-    {test_result, Result}.
 
 wait_for_completion(timeout, State) ->
     %% Test timed out
@@ -369,7 +363,7 @@ notify_executor(pass, #state{test_module=Test,
 notify_executor(FailResult, #state{test_module=Test,
                                    start_time=Start,
                                    end_time=End}) ->
-    Duration = timer:now_diff(End, Start),
+    Duration = now_diff(End, Start),
     Notification = {test_complete, Test, self(), FailResult, Duration},
     riak_test_executor:send_event(Notification).
 
@@ -385,3 +379,14 @@ test_versions(Properties) ->
             [UpgradeHead | Rest] = UpgradePath,
             {UpgradeHead, Rest}
     end.
+
+now_diff(undefined, _) ->
+    0;
+now_diff(_, undefined) ->
+    0;
+now_diff(End, Start) ->
+    timer:now_diff(End, Start).
+
+%% Simple function to hide the details of the message wrapping
+test_result(Result) ->
+    {test_result, Result}.

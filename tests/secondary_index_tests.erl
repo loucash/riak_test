@@ -33,10 +33,13 @@
 -define(KEYS(A,B,C), [int_to_key(N) || N <- lists:seq(A,B), C]).
 -define(KEYS(A,B,G1,G2), [int_to_key(N) || N <- lists:seq(A,B), G1, G2]).
 
+-define(DEVS(N), lists:concat([N, "@127.0.0.1"])).
+-define(DEV(N), list_to_atom(?DEVS(N))).
+
 properties() ->
     rt_properties:new([{node_count, 3},
                        {wait_for_transfers, true},
-                       {start_version, previous},
+                       {valid_backends, [eleveldb, memory]},
                        {config, config()}]).
 
 config() ->
@@ -44,7 +47,7 @@ config() ->
      {riak_core, [{handoff_concurrency, 11}]}].
 
 confirm(Properties, _MD) ->
-    Nodes = rt_properties:get(nodes, Properties),
+    Nodes = [?DEV(N) || N <- rt_properties:get(nodes, Properties)],
     Bucket = druuid:v4_str(),
     lager:info("Bucket: ~p", [Bucket]),
     PBC = rt_pb:pbc(hd(Nodes)),
