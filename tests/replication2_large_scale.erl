@@ -15,62 +15,46 @@
 
 -record(state, {a_up = [], a_down = [], b_up= [], b_down= []}).
 
--define(Conf,[{riak_kv, [{anti_entropy, {on, []}},
-                         {anti_entropy_build_limit, {100, 1000}},
-                         {anti_entropy_concurrency, 100}]},
-              {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 1},
-                           {fullsync_on_connect, false}]}
-             ]).
+-define(Conf,
+        [{riak_kv, [{anti_entropy, {on, []}},
+                    {anti_entropy_build_limit, {100, 1000}},
+                    {anti_entropy_concurrency, 100}]},
+         {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 1},
+                      {fullsync_on_connect, false}]}
+        ]).
 
--define(SizeA, 3).
--define(SizeB, 3).
-
--define(BB_RATE,
-        rt_config:get(basho_bench_rate, 10)).
--define(BB_DURATION,
-        rt_config:get(basho_bench_duration, 2)).
--define(BB_KEYGEN,
-        rt_config:get(basho_bench_keygen, {int_to_bin_bigendian, {pareto_int, 10000000}})).
--define(BB_VALGEN,
-        rt_config:get(basho_bench_valgen, {exponential_bin, 1000, 10000})).
--define(BB_OPERATIONS,
-        rt_config:get(basho_bench_operations, [{get, 5},{put, 1}])).
--define(BB_BUCKET,
-        rt_config:get(basho_bench_bucket, <<"testbucket">>)).
--define(BB_DRIVER,
-        rt_config:get(basho_bench_driver, riakc_pb)).
-
+-define(SizeA, 2).
+-define(SizeB, 2).
 
 confirm() ->
     {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '->'),
     State = #state{ a_up = ANodes, b_up = BNodes},
-    %%verify_correct_connection(State),
-    %%    rt_bench:bench(bacho_bench_config(), ["localhost"], "50percentbackround"),
-    HostList = rt_config:get(rt_hostnames),
+    repl_util:verify_correct_connection(ANodes),
+    AllNodes = ANodes ++ BNodes,
+    
+    PbIps = lists:map(fun(Node) ->
+                              {ok, [{PB_IP, PB_Port}]} = rt:get_pb_conn_info(Node),
+                              {PB_IP, PB_Port}
+                      end, AllNodes),
 
-    LoadConfig = bacho_bench_config(HostList),
-    spawn_link(fun() ->  rt_bench:bench(LoadConfig, HostList, "50percentbackround") end),
+    LoadConfig = bacho_bench_config(PbIps),
+    spawn_link(fun() -> rt_bench:bench(LoadConfig, AllNodes, "50percentbackround") end),
 
     timer:sleep(20000),
 
     LastA = lists:last(State#state.a_up),
     State1 = node_a_down(State, LastA),
-    %%verify_correct_connection(State1),
 
-    LastB = lists:last(State1#state.b_up),
-    State2 = node_a_down(State1, LastB),
-
-
-    %%verify_correct_connection(State2),
-
+    State2 = node_a_down(State1, lists:last(State1#state.b_up)),
     repl_util:setup_rt(ANodes, '<-', BNodes),
+    State3 = node_a_down(State2, lists:last(State2#state.a_up)),
+    verify_correct_connection(State3),
+    State4 = node_a_down(State3, lists:last(State3#state.b_up)),
+    
+    State5 = node_a_down(State4, lists:last(State4#state.b_down)),
+    State6 = node_a_down(State5, lists:last(State5#state.a_down)),
+    _State7 = node_a_down(State6, lists:last(State6#state.b_down)),
 
-    LastA = lists:last(State#state.a_up),
-    State1 = node_a_down(State, LastA),
-    %%verify_correct_connection(State1),
-
-    LastB = lists:last(State1#state.b_up),
-    State2 = node_a_down(State1, LastB),
 
 
     LeaderA = repl_aae_fullsync_util:prepare_cluster(ANodes, BNodes),
@@ -80,13 +64,36 @@ confirm() ->
                                  start_and_wait_until_fullsync_complete,
                                  [LeaderA]),
     lager:info("Fullsync time: ~p", [FullsyncTime]),
+
     true.
 
 verify_correct_connection(State) ->
     repl_util:verify_correct_connection(State#state.a_up, State#state.b_up).
 
 bacho_bench_config(HostList) ->
-    rt_bench:config(?BB_RATE, ?BB_DURATION, HostList, ?BB_KEYGEN, ?BB_VALGEN, ?BB_OPERATIONS).
+    BenchRate =
+        rt_config:get(basho_bench_rate, 30),
+    BenchDuration =
+        rt_config:get(basho_bench_duration, 20),
+    KeyGen =
+        rt_config:get(basho_bench_keygen, {int_to_bin_bigendian, {pareto_int, 10000000}}),
+    ValGen =
+        rt_config:get(basho_bench_valgen, {exponential_bin, 1000, 10000}),
+    Operations =
+        rt_config:get(basho_bench_operations, [{get, 5},{put, 1}]),
+    Bucket =
+        rt_config:get(basho_bench_bucket, <<"testbucket">>),
+    Driver =
+        rt_config:get(basho_bench_driver, riakc_pb),
+    
+    rt_bench:config(BenchRate,
+                    BenchDuration,
+                    HostList, 
+                    KeyGen,
+                    ValGen,
+                    Operations,
+                    Bucket,
+                    Driver).
 
 
 node_a_down(State, Node) ->

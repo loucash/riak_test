@@ -58,6 +58,7 @@
          get_current_bucket_props/2,
          create_clusters_with_rt/2,
          setup_rt/3,
+         verify_correct_connection/1,
          verify_correct_connection/2
         ]).
 -include_lib("eunit/include/eunit.hrl").
