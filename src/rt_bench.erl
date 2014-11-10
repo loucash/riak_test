@@ -65,32 +65,43 @@ bench(Config, NodeList, TestName, Runners, Drop) ->
                     %% specifying the remote testdir and the newly
                     %% copied remote config location
                     Cmd = ?ESCRIPT++" "++
-                        BBDir++"/"++"basho_bench -d "++
-                        BBDir++"/"++TestName++"_"++Num++" "++RemotePath,
+                              BBDir++"/"++"basho_bench -d "++
+                              BBDir++"/"++TestName++"_"++Num++" "++RemotePath,
                     lager:info("Spawning remote basho_bench w/ ~p on ~p",
                                [Cmd, LG]),
                     {0, R} = rtssh:ssh_cmd(LG, Cmd, false),
                     lager:info("bench run finished, on ~p returned ~p",
-                   [LG, R]),
+                               [LG, R]),
                     {0, _} = rtssh:ssh_cmd(LG, "rm -r "++BBTmp++"/"),
-            Owner ! {done, ok}
+                    Owner ! {done, ok}
                 catch
                     Class:Error ->
                         lager:error("basho_bench died with error ~p:~p",
                                     [Class, Error]),
-            Owner ! {done, error}
+                        Owner ! {done, error}
                 after
                     lager:info("finished bb run")
                 end
         end,
     S = self(),
     [spawn(fun() -> F(R, S) end)|| R <- GenList],
-    [ok] = lists:usort([receive {done, R} -> R end
+    lists:usort([receive {done, R} -> R end
             || _ <- GenList]),
     lager:debug("removing stage dir"),
     {ok, FL} = file:list_dir(BBTmpStage),
     [file:delete(BBTmpStage++File) || File <- FL],
     ok = file:del_dir(BBTmpStage).
+
+stop_bench() ->
+    LoadGens = rt_config:get(perf_loadgens, ["localhost"]),
+    lists:foreach(fun(LG) ->
+                          {0, Output} = rtssh:ssh_cmd(LG, "ps -ef | grep basho_bench"),
+                          [_, Pid | _] = string:tokens(Output, " "),
+                          Cmd = "kill " ++ Pid,
+                          lager:info("Spawning remote basho_bench w/ ~p on ~p",
+                                     [Cmd, LG]),
+                          {0, _} = rtssh:ssh_cmd(LG, Cmd, false)
+                  end,LoadGens).
 
 collect_bench_data(TestName, Dir) ->
     %% grab all the benchmark stuff. need L to make real files because

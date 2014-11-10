@@ -23,8 +23,8 @@
                       {fullsync_on_connect, false}]}
         ]).
 
--define(SizeA, 2).
--define(SizeB, 2).
+-define(SizeA, 5).
+-define(SizeB, 5).
 
 confirm() ->
     {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '->'),
@@ -38,17 +38,18 @@ confirm() ->
                       end, AllNodes),
 
     LoadConfig = bacho_bench_config(PbIps),
-    spawn_link(fun() -> rt_bench:bench(LoadConfig, AllNodes, "50percentbackround") end),
+    spawn(fun() -> rt_bench:bench(LoadConfig, AllNodes, "50percentbackround") end),
 
     timer:sleep(20000),
 
     LastA = lists:last(State#state.a_up),
     State1 = node_a_down(State, LastA),
 
+    rt_bench:stop_bench(),
+
     State2 = node_a_down(State1, lists:last(State1#state.b_up)),
-    repl_util:setup_rt(ANodes, '<-', BNodes),
+%%  repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
     State3 = node_a_down(State2, lists:last(State2#state.a_up)),
-    verify_correct_connection(State3),
     State4 = node_a_down(State3, lists:last(State3#state.b_up)),
     
     State5 = node_a_down(State4, lists:last(State4#state.b_down)),
@@ -65,10 +66,8 @@ confirm() ->
                                  [LeaderA]),
     lager:info("Fullsync time: ~p", [FullsyncTime]),
 
-    true.
+    pass.
 
-verify_correct_connection(State) ->
-    repl_util:verify_correct_connection(State#state.a_up, State#state.b_up).
 
 bacho_bench_config(HostList) ->
     BenchRate =
