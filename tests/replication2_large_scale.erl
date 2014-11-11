@@ -23,11 +23,11 @@
                       {fullsync_on_connect, false}]}
         ]).
 
--define(SizeA, 5).
--define(SizeB, 5).
+-define(SizeA, 3).
+-define(SizeB, 3).
 
 confirm() ->
-    {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '->'),
+    {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
     State = #state{ a_up = ANodes, b_up = BNodes},
     repl_util:verify_correct_connection(ANodes),
     AllNodes = ANodes ++ BNodes,
@@ -40,40 +40,43 @@ confirm() ->
     LoadConfig = bacho_bench_config(PbIps),
     spawn(fun() -> rt_bench:bench(LoadConfig, AllNodes, "50percentbackround") end),
 
-    timer:sleep(20000),
+     timer:sleep(30000),
 
-    LastA = lists:last(State#state.a_up),
-    State1 = node_a_down(State, LastA),
+    State1 = node_a_down(State),
+    State2 = node_a_down(State1),
+    timer:sleep(120000),
+%%     repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
+    State3 = node_b_down(State2),
+    timer:sleep(120000),
+    State4 = node_a_up(State3),
+    timer:sleep(120000),
+    State5 = node_b_down(State4),
+     timer:sleep(120000),
+    State6 = node_a_up(State5),
+     timer:sleep(120000),
+    State7 = node_b_up(State6),
 
+    run_full_sync(State7),
     rt_bench:stop_bench(),
-
-    State2 = node_a_down(State1, lists:last(State1#state.b_up)),
-%%  repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
-    State3 = node_a_down(State2, lists:last(State2#state.a_up)),
-    State4 = node_a_down(State3, lists:last(State3#state.b_up)),
-    
-    State5 = node_a_down(State4, lists:last(State4#state.b_down)),
-    State6 = node_a_down(State5, lists:last(State5#state.a_down)),
-    _State7 = node_a_down(State6, lists:last(State6#state.b_down)),
-
-
-
-    LeaderA = repl_aae_fullsync_util:prepare_cluster(ANodes, BNodes),
-    %% Perform fullsync of an empty cluster.
-    rt:wait_until_aae_trees_built(ANodes ++ BNodes),
-    {FullsyncTime, _} = timer:tc(repl_util,
-                                 start_and_wait_until_fullsync_complete,
-                                 [LeaderA]),
-    lager:info("Fullsync time: ~p", [FullsyncTime]),
+    timer:sleep(20000),
+    run_full_sync(State7),
 
     pass.
 
+run_full_sync(State) ->
+    LeaderA = repl_aae_fullsync_util:prepare_cluster(State#state.a_up, State#state.b_up),
+    %% Perform fullsync of an empty cluster.
+    rt:wait_until_aae_trees_built(State#state.a_up ++ State#state.b_up),
+    {FullsyncTime, _} = timer:tc(repl_util,
+                                  start_and_wait_until_fullsync_complete,
+                                  [LeaderA]),
+    lager:info("Fullsync time: ~p", [FullsyncTime]).
 
 bacho_bench_config(HostList) ->
     BenchRate =
-        rt_config:get(basho_bench_rate, 30),
+        rt_config:get(basho_bench_rate, 50),
     BenchDuration =
-        rt_config:get(basho_bench_duration, 20),
+        rt_config:get(basho_bench_duration, infinity),
     KeyGen =
         rt_config:get(basho_bench_keygen, {int_to_bin_bigendian, {pareto_int, 10000000}}),
     ValGen =
@@ -83,7 +86,9 @@ bacho_bench_config(HostList) ->
     Bucket =
         rt_config:get(basho_bench_bucket, <<"testbucket">>),
     Driver =
-        rt_config:get(basho_bench_driver, riakc_pb),
+        rt_config:get(basho_bench_driver, riakc_pb), 
+    ReportInterval =
+         rt_config:get(basho_bench_report_interval, 5),
     
     rt_bench:config(BenchRate,
                     BenchDuration,
@@ -92,8 +97,20 @@ bacho_bench_config(HostList) ->
                     ValGen,
                     Operations,
                     Bucket,
-                    Driver).
+                    Driver,
+                    ReportInterval).
 
+node_a_down(State) ->
+    node_a_down(State, lists:last(State#state.a_up)).
+
+node_b_down(State) ->
+    node_b_down(State, lists:last(State#state.b_up)).
+
+node_a_up(State) ->
+    node_a_up(State, lists:last(State#state.a_down)).
+
+node_b_up(State) ->
+    node_b_up(State, lists:last(State#state.b_down)).
 
 node_a_down(State, Node) ->
     stop(Node),
@@ -127,12 +144,12 @@ new_state(S, node_b_up, Node) ->
 stop(Node) ->
     rt:stop(Node),
     rt:wait_until_unpingable(Node),
-    timer:sleep(15000),
+    timer:sleep(5000),
     true.
 start(Node) ->
     rt:start(Node),
     rt:wait_until_ready(Node),
-    timer:sleep(15000),
+    timer:sleep(5000),
     true.
 
 

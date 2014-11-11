@@ -100,7 +100,7 @@ stop_bench() ->
                           Cmd = "kill " ++ Pid,
                           lager:info("Spawning remote basho_bench w/ ~p on ~p",
                                      [Cmd, LG]),
-                          {0, _} = rtssh:ssh_cmd(LG, Cmd, false)
+                          {_, _} = rtssh:ssh_cmd(LG, Cmd, false)
                   end,LoadGens).
 
 collect_bench_data(TestName, Dir) ->
@@ -122,10 +122,10 @@ config(Rate, Duration, NodeList, KeyGen,
        ValGen, Operations) ->
     config(Rate, Duration, NodeList, KeyGen,
            ValGen, Operations,
-           <<"testbucket">>, riakc_pb).
+           <<"testbucket">>, riakc_pb, 10).
 
 config(Rate, Duration, NodeList, KeyGen,
-       ValGen, Operations, Bucket, Driver0) ->
+       ValGen, Operations, Bucket, Driver0, ReportInterval) ->
     lager:info("Bucket is: ~p", [Bucket]),
     {Driver, DriverB} = case Driver0 of
         '2i' ->
@@ -153,7 +153,8 @@ config(Rate, Duration, NodeList, KeyGen,
 
      {DriverIps, NodeList},
      {DriverReplies, default},
-     {driver, DriverName}
+     {driver, DriverName},
+     {report_interval, ReportInterval}
      %%{code_paths, rt_config:get(basho_bench_code_paths)}
     ].
 
