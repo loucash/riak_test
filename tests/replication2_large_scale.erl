@@ -10,6 +10,7 @@
 %%realtime not halted by nodes up/down/add/remove
 %%
 -behavior(riak_test).
+-include_lib("eunit/include/eunit.hrl").
 -compile(export_all).
 -export([confirm/0]).
 
@@ -23,54 +24,64 @@
                       {fullsync_on_connect, false}]}
         ]).
 
--define(SizeA, 3).
--define(SizeB, 3).
+-define(SizeA, 5).
+-define(SizeB, 5).
+
+-define(Sleep, 120000).
 
 confirm() ->
     {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
     State = #state{ a_up = ANodes, b_up = BNodes},
     repl_util:verify_correct_connection(ANodes),
-    AllNodes = ANodes ++ BNodes,
     
-    PbIps = lists:map(fun(Node) ->
-                              {ok, [{PB_IP, PB_Port}]} = rt:get_pb_conn_info(Node),
-                              {PB_IP, PB_Port}
-                      end, AllNodes),
+    AllLoadGens = rt_config:get(perf_loadgens, ["localhost"]),
+    case length(AllLoadGens) of
+        1 ->
+            start_basho_bench(ANodes ++ BNodes, AllLoadGens);
+        N ->
+            [ALoadGens, BLoadGens] = lists:split(N div 2, AllLoadGens),
+            start_basho_bench(ANodes, ALoadGens),
+            start_basho_bench(BNodes, BLoadGens)
+    end,
 
-    LoadConfig = bacho_bench_config(PbIps),
-    spawn(fun() -> rt_bench:bench(LoadConfig, AllNodes, "50percentbackround") end),
-
-     timer:sleep(30000),
-
+    timer:sleep(?Sleep),
     State1 = node_a_down(State),
     State2 = node_a_down(State1),
-    timer:sleep(120000),
-%%     repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
+    timer:sleep(?Sleep),
+%%  repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
     State3 = node_b_down(State2),
-    timer:sleep(120000),
+    timer:sleep(?Sleep),
     State4 = node_a_up(State3),
-    timer:sleep(120000),
+    timer:sleep(?Sleep),
     State5 = node_b_down(State4),
-     timer:sleep(120000),
+     timer:sleep(?Sleep),
     State6 = node_a_up(State5),
-     timer:sleep(120000),
+     timer:sleep(?Sleep),
     State7 = node_b_up(State6),
 
     run_full_sync(State7),
     rt_bench:stop_bench(),
-    timer:sleep(20000),
+    timer:sleep(?Sleep),
     run_full_sync(State7),
-
     pass.
 
 run_full_sync(State) ->
-    LeaderA = repl_aae_fullsync_util:prepare_cluster(State#state.a_up, State#state.b_up),
+    LeaderA = prepare_cluster(State#state.a_up, State#state.b_up),
     %% Perform fullsync of an empty cluster.
     rt:wait_until_aae_trees_built(State#state.a_up ++ State#state.b_up),
     {FullsyncTime, _} = timer:tc(repl_util,
                                   start_and_wait_until_fullsync_complete,
                                   [LeaderA]),
-    lager:info("Fullsync time: ~p", [FullsyncTime]).
+    lager:info("Fullsync time: ~p s", [FullsyncTime div 1000000]).
+
+start_basho_bench(Nodes, LoadGens) ->
+        PbIps = lists:map(fun(Node) ->
+                              {ok, [{PB_IP, PB_Port}]} = rt:get_pb_conn_info(Node),
+                              {PB_IP, PB_Port}
+                      end, Nodes),
+
+    LoadConfig = bacho_bench_config(PbIps),
+    spawn(fun() -> rt_bench:bench(LoadConfig, Nodes, "50percentbackround", 1, false, LoadGens) end).
 
 bacho_bench_config(HostList) ->
     BenchRate =
@@ -153,3 +164,19 @@ start(Node) ->
     true.
 
 
+
+prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
+    LeaderA = rpc:call(AFirst,
+                       riak_core_cluster_mgr, get_leader, []),
+
+    {ok, {IP, Port}} = rpc:call(BFirst,
+                                application, get_env, [riak_core, cluster_mgr]),
+
+    repl_util:connect_cluster(LeaderA, IP, Port),
+    ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
+
+    repl_util:enable_fullsync(LeaderA, "B"),
+    rt:wait_until_ring_converged(ANodes),
+
+    ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
+    LeaderA.

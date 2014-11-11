@@ -14,9 +14,11 @@ bench(Config, NodeList, TestName, Runners) ->
     bench(Config, NodeList, TestName, Runners, false).
 
 bench(Config, NodeList, TestName, Runners, Drop) ->
-    lager:info("Starting basho_bench run"),
-
     LoadGens = rt_config:get(perf_loadgens, ["localhost"]),
+    bench(Config, NodeList, TestName, Runners, Drop, LoadGens).
+
+bench(Config, NodeList, TestName, Runners, Drop, LoadGens) ->
+    lager:info("Starting basho_bench run"),
 
     case Drop of
         true ->
