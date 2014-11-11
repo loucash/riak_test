@@ -39,7 +39,7 @@ confirm() ->
         1 ->
             start_basho_bench(ANodes ++ BNodes, AllLoadGens);
         N ->
-            [ALoadGens, BLoadGens] = lists:split(N div 2, AllLoadGens),
+            {ALoadGens, BLoadGens} = lists:split(N div 2, AllLoadGens),
             start_basho_bench(ANodes, ALoadGens),
             start_basho_bench(BNodes, BLoadGens)
     end,
