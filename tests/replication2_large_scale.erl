@@ -27,12 +27,11 @@
 -define(SizeA, 5).
 -define(SizeB, 5).
 
--define(Sleep, 120000).
+-define(Sleep, 120 * 1000).
 
 confirm() ->
     {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
     State = #state{ a_up = ANodes, b_up = BNodes},
-    repl_util:verify_correct_connection(ANodes),
     
     AllLoadGens = rt_config:get(perf_loadgens, ["localhost"]),
     case length(AllLoadGens) of
@@ -44,20 +43,28 @@ confirm() ->
             start_basho_bench(BNodes, BLoadGens)
     end,
 
-    timer:sleep(?Sleep),
     State1 = node_a_down(State),
+    timer:sleep(?Sleep),
     State2 = node_a_down(State1),
     timer:sleep(?Sleep),
-%%  repl_util:setup_rt(State1#state.a_up, '<-', State1#state.b_up),
     State3 = node_b_down(State2),
+    run_full_sync(State3),
     timer:sleep(?Sleep),
     State4 = node_a_up(State3),
     timer:sleep(?Sleep),
     State5 = node_b_down(State4),
-     timer:sleep(?Sleep),
+    timer:sleep(?Sleep),
     State6 = node_a_up(State5),
-     timer:sleep(?Sleep),
+    run_full_sync(State6),
+    timer:sleep(?Sleep),
     State7 = node_b_up(State6),
+
+%%%  Functions for running random up/down of nodes.
+%%     _ = random:seed(now()),
+%%     State7 = lists:foldl(fun(_N, StateIn) ->
+%%                                  NewState = random_action(StateIn),
+%%                                  run_full_sync(NewState)
+%%                          end, State, lists:seq(1,1000)),
 
     run_full_sync(State7),
     rt_bench:stop_bench(),
@@ -111,6 +118,22 @@ bacho_bench_config(HostList) ->
                     Driver,
                     ReportInterval).
 
+random_action(State) ->
+    [_|ValidAUp] = State#state.a_up,
+    [_|ValidBUp] = State#state.b_up,
+    NodeActionList =
+        lists:flatten(
+          [add_actions(ValidAUp, fun node_a_down/2),
+           add_actions(ValidBUp, fun node_b_down/2),
+           add_actions(State#state.a_down, fun node_a_up/2),
+           add_actions(State#state.b_down, fun node_b_up/2)]),
+    {Node, Action} = lists:nth(random:uniform(length(NodeActionList)), NodeActionList),
+    lager:info("Running ~p on ~p", [Action, Node]),
+    Action(State, Node).
+
+add_actions(Nodes, Action) ->
+    [{Node, Action} || Node <- Nodes].
+
 node_a_down(State) ->
     node_a_down(State, lists:last(State#state.a_up)).
 
@@ -162,8 +185,6 @@ start(Node) ->
     rt:wait_until_ready(Node),
     timer:sleep(5000),
     true.
-
-
 
 prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
     LeaderA = rpc:call(AFirst,
