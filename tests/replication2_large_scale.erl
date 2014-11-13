@@ -17,7 +17,12 @@
 -record(state, {a_up = [], a_down = [], a_left = [], b_up= [], b_down= [], b_left =[]}).
 
 -define(Conf,
-        [{riak_kv, [{anti_entropy, {on, []}},
+        [{eleveldb, [
+                     %% Required. Set to your data storage directory
+                     %%{data_root, " /riakdata"}
+                    ]},
+         {riak_kv, [{storage_backend, riak_kv_eleveldb_backend},
+                    {anti_entropy, {on, []}},
                     {anti_entropy_build_limit, {100, 1000}},
                     {anti_entropy_concurrency, 100}
                    ]},
@@ -194,9 +199,9 @@ node_a_leave(State) ->
 node_b_leave(State) ->
     node_b_leave(State, lists:last(State#state.b_up)).
 node_a_join(State) ->
-    node_a_join(State, lists:last(State#state.a_down)).
+    node_a_join(State, lists:last(State#state.a_left)).
 node_b_join(State) ->
-    node_b_join(State, lists:last(State#state.b_down)).
+    node_b_join(State, lists:last(State#state.b_left)).
 
 node_a_leave(State, Node) ->
     leave(Node),
