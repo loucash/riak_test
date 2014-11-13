@@ -19,15 +19,19 @@
 -define(Conf,
         [{riak_kv, [{anti_entropy, {on, []}},
                     {anti_entropy_build_limit, {100, 1000}},
-                    {anti_entropy_concurrency, 100}]},
-         {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 1},
-                      {fullsync_on_connect, false}]}
+                    {anti_entropy_concurrency, 100}
+                   ]},
+         {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 10},
+                      {fullsync_strategy, aae},
+                      {fullsync_on_connect, false},
+                      {fullsync_interval, disabled}
+                     ]}
         ]).
 
 -define(SizeA, 5).
 -define(SizeB, 5).
 
--define(Sleep, 120 * 1000).
+-define(Sleep, 300 * 1000).
 
 confirm() ->
     {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
@@ -43,21 +47,36 @@ confirm() ->
             start_basho_bench(BNodes, BLoadGens)
     end,
 
+    timer:sleep(?Sleep),
+
     State1 = node_a_down(State),
     timer:sleep(?Sleep),
+
     State2 = node_a_down(State1),
     timer:sleep(?Sleep),
+
     State3 = node_b_down(State2),
-    run_full_sync(State3),
     timer:sleep(?Sleep),
+
     State4 = node_a_up(State3),
     timer:sleep(?Sleep),
+%%     run_full_sync(State4),
+%%     timer:sleep(?Sleep),
+
     State5 = node_b_down(State4),
     timer:sleep(?Sleep),
+
     State6 = node_a_up(State5),
+    timer:sleep(?Sleep),
     run_full_sync(State6),
     timer:sleep(?Sleep),
+
     State7 = node_b_up(State6),
+    timer:sleep(?Sleep),
+    run_full_sync(State7),
+    rt_bench:stop_bench(),
+    timer:sleep(?Sleep),
+    run_full_sync(State7),
 
 %%%  Functions for running random up/down of nodes.
 %%     _ = random:seed(now()),
@@ -66,13 +85,10 @@ confirm() ->
 %%                                  run_full_sync(NewState)
 %%                          end, State, lists:seq(1,1000)),
 
-    run_full_sync(State7),
-    rt_bench:stop_bench(),
-    timer:sleep(?Sleep),
-    run_full_sync(State7),
     pass.
 
 run_full_sync(State) ->
+    lager:info("run_full_sync ~p -> ~p", [State#state.a_up, State#state.b_up]),
     LeaderA = prepare_cluster(State#state.a_up, State#state.b_up),
     %% Perform fullsync of an empty cluster.
     rt:wait_until_aae_trees_built(State#state.a_up ++ State#state.b_up),
@@ -92,7 +108,7 @@ start_basho_bench(Nodes, LoadGens) ->
 
 bacho_bench_config(HostList) ->
     BenchRate =
-        rt_config:get(basho_bench_rate, 50),
+        rt_config:get(basho_bench_rate, 30),
     BenchDuration =
         rt_config:get(basho_bench_duration, infinity),
     KeyGen =
@@ -128,7 +144,6 @@ random_action(State) ->
            add_actions(State#state.a_down, fun node_a_up/2),
            add_actions(State#state.b_down, fun node_b_up/2)]),
     {Node, Action} = lists:nth(random:uniform(length(NodeActionList)), NodeActionList),
-    lager:info("Running ~p on ~p", [Action, Node]),
     Action(State, Node).
 
 add_actions(Nodes, Action) ->
@@ -187,17 +202,15 @@ start(Node) ->
     true.
 
 prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
+    lager:info("Prepare cluster for fullsync"),
     LeaderA = rpc:call(AFirst,
                        riak_core_cluster_mgr, get_leader, []),
-
     {ok, {IP, Port}} = rpc:call(BFirst,
                                 application, get_env, [riak_core, cluster_mgr]),
-
     repl_util:connect_cluster(LeaderA, IP, Port),
     ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
-
     repl_util:enable_fullsync(LeaderA, "B"),
-    rt:wait_until_ring_converged(ANodes),
+    rt:wait_until_ring_converged(ANodes), %% Only works when all nodes in ANodes are up.
 
     ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
     LeaderA.
