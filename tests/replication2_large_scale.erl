@@ -14,7 +14,7 @@
 -compile(export_all).
 -export([confirm/0]).
 
--record(state, {a_up = [], a_down = [], b_up= [], b_down= []}).
+-record(state, {a_up = [], a_down = [], a_left = [], b_up= [], b_down= [], b_left =[]}).
 
 -define(Conf,
         [{riak_kv, [{anti_entropy, {on, []}},
@@ -49,8 +49,12 @@ confirm() ->
 
     timer:sleep(?Sleep),
 
-    State1 = node_a_down(State),
+    State1 = node_a_leave(State),
     timer:sleep(?Sleep),
+    
+    run_full_sync(State1),
+    timer:sleep(?Sleep),
+
 
     State2 = node_a_down(State1),
     timer:sleep(?Sleep),
@@ -66,7 +70,7 @@ confirm() ->
     State5 = node_b_down(State4),
     timer:sleep(?Sleep),
 
-    State6 = node_a_up(State5),
+    State6 = node_a_join(State5),
     timer:sleep(?Sleep),
     run_full_sync(State6),
     timer:sleep(?Sleep),
@@ -149,15 +153,14 @@ random_action(State) ->
 add_actions(Nodes, Action) ->
     [{Node, Action} || Node <- Nodes].
 
+%%%%%%%% Start / Stop
+
 node_a_down(State) ->
     node_a_down(State, lists:last(State#state.a_up)).
-
 node_b_down(State) ->
     node_b_down(State, lists:last(State#state.b_up)).
-
 node_a_up(State) ->
     node_a_up(State, lists:last(State#state.a_down)).
-
 node_b_up(State) ->
     node_b_up(State, lists:last(State#state.b_down)).
 
@@ -174,22 +177,6 @@ node_b_up(State, Node) ->
     start(Node),
     new_state(State, node_b_up, [Node]).
 
-new_state(S, node_a_down, Node) ->
-    S#state{a_up = S#state.a_up -- Node,
-            a_down = S#state.a_down ++ Node};
-
-new_state(S, node_b_down, Node) ->
-    S#state{b_up = S#state.b_up -- Node,
-            b_down = S#state.b_down ++ Node};
-
-new_state(S, node_a_up, Node) ->
-    S#state{a_down = S#state.a_down -- Node,
-            a_up = S#state.a_up ++ Node};
-
-new_state(S, node_b_up, Node) ->
-    S#state{b_down = S#state.b_down -- Node,
-            b_up = S#state.b_up ++ Node}.
-
 stop(Node) ->
     rt:stop(Node),
     rt:wait_until_unpingable(Node),
@@ -200,6 +187,64 @@ start(Node) ->
     rt:wait_until_ready(Node),
     timer:sleep(5000),
     true.
+
+%%%%%%%% Leave / Join
+node_a_leave(State) ->
+    node_a_leave(State, lists:last(State#state.a_up)).
+node_b_leave(State) ->
+    node_b_leave(State, lists:last(State#state.b_up)).
+node_a_join(State) ->
+    node_a_join(State, lists:last(State#state.a_down)).
+node_b_join(State) ->
+    node_b_join(State, lists:last(State#state.b_down)).
+
+node_a_leave(State, Node) ->
+    leave(Node),
+    new_state(State, node_a_leave, [Node]).
+node_b_leave(State, Node) ->
+    leave(Node),
+    new_state(State, node_b_leave, [Node]).
+node_a_join(State, Node) ->
+    join(Node, "A"),
+    new_state(State, node_a_join, [Node]).
+node_b_join(State, Node) ->
+    join(Node, lists:first(State#state.b_up)),
+    new_state(State, node_b_join, [Node]).
+
+leave(Node) ->
+    rt:leave(Node).
+join(Node, Node1) ->
+    rt:staged_join(Node, Node1),
+    rt:plan_and_commit(Node1),
+    rt:try_nodes_ready([Node], 3, 500).
+
+%%%%%%%% Update state after action
+new_state(S, node_a_down, Node) ->
+    S#state{a_up = S#state.a_up -- Node,
+            a_down = S#state.a_down ++ Node};
+new_state(S, node_b_down, Node) ->
+    S#state{b_up = S#state.b_up -- Node,
+            b_down = S#state.b_down ++ Node};
+new_state(S, node_a_up, Node) ->
+    S#state{a_down = S#state.a_down -- Node,
+            a_up = S#state.a_up ++ Node};
+new_state(S, node_b_up, Node) ->
+    S#state{b_down = S#state.b_down -- Node,
+            b_up = S#state.b_up ++ Node};
+
+new_state(S, node_a_leave, Node) ->
+    S#state{a_up = S#state.a_up -- Node,
+            a_left = S#state.a_left ++ Node};
+new_state(S, node_b_leave, Node) ->
+    S#state{b_up = S#state.b_up -- Node,
+            b_left = S#state.b_left ++ Node};
+new_state(S, node_a_join, Node) ->
+    S#state{a_left = S#state.a_left -- Node,
+            a_up = S#state.a_up ++ Node};
+new_state(S, node_b_join, Node) ->
+    S#state{b_left = S#state.b_left -- Node,
+            b_up = S#state.b_up ++ Node}.
+
 
 prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
     lager:info("Prepare cluster for fullsync"),
