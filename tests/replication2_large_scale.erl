@@ -19,7 +19,7 @@
 -define(Conf,
         [{eleveldb, [
                      %% Required. Set to your data storage directory
-                     %%{data_root, " /riakdata"}
+                     {data_root, " /mnt"}
                     ]},
          {riak_kv, [{storage_backend, riak_kv_eleveldb_backend},
                     {anti_entropy, {on, []}},
@@ -39,7 +39,7 @@
 -define(Sleep, 300 * 1000).
 
 confirm() ->
-    {ANodes, BNodes} = repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
+    {ANodes, BNodes} = repl_util:deploy_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
     State = #state{ a_up = ANodes, b_up = BNodes},
     
     AllLoadGens = rt_config:get(perf_loadgens, ["localhost"]),
@@ -264,3 +264,4 @@ prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
 
     ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
     LeaderA.
+

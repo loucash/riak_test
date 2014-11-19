@@ -57,6 +57,7 @@
          update_props/5,
          get_current_bucket_props/2,
          create_clusters_with_rt/2,
+         deploy_clusters_with_rt/2,
          setup_rt/3,
          verify_correct_connection/1,
          verify_correct_connection/2
@@ -967,6 +968,13 @@ get_current_bucket_props(Node, Bucket) when is_atom(Node) ->
 
 create_clusters_with_rt(ClusterSetup, Direction) ->
     [ANodes, BNodes] = rt:build_clusters(ClusterSetup),
+    setup_cluster_rt([ANodes, BNodes], Direction).
+
+deploy_clusters_with_rt(ClusterSetup, Direction) ->
+    [ANodes, BNodes] = rt:deploy_clusters(ClusterSetup),
+    setup_cluster_rt([ANodes, BNodes], Direction).
+
+setup_cluster_rt([ANodes, BNodes], Direction) ->
     ?assertEqual(ok, repl_util:wait_until_leader_converge(ANodes)),
     AFirst = hd(ANodes),
 
