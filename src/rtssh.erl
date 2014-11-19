@@ -21,7 +21,7 @@ get_deps() ->
     end.
 
 setup_harness(_Test, _Args) ->
-    Path = relpath(root),
+%%     Path = relpath(root),
     Hosts = load_hosts(),
     load_addresses(),
     rt_config:set(rt_hostnames, Hosts),
@@ -32,10 +32,10 @@ setup_harness(_Test, _Args) ->
 
     %% Reset nodes to base state
     lager:info("Resetting nodes to fresh state"),
-    rt:pmap(fun(Host) ->
-                    run_git(Host, Path, "reset HEAD --hard"),
-                    run_git(Host, Path, "clean -fd")
-            end, Hosts),
+%%     rt:pmap(fun(Host) ->
+%%                     run_git(Host, Path, "reset HEAD --hard"),
+%%                     run_git(Host, Path, "clean -fd")
+%%             end, Hosts),
     ok.
 
 get_backends() ->
@@ -213,8 +213,8 @@ deploy_nodes(NodeConfig, Hosts) ->
     [ok = rt:wait_until_registered(N, riak_core_ring_manager) || N <- Nodes],
 
     %% Ensure nodes are singleton clusters
-    [ok = rt:check_singleton_node(N) || {N, Version} <- VersionMap,
-                                        Version /= "0.14.2"],
+%%     [ok = rt:check_singleton_node(N) || {N, Version} <- VersionMap,
+%%                                         Version /= "0.14.2"],
 
     Nodes.
 
