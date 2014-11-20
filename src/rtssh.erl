@@ -21,7 +21,7 @@ get_deps() ->
     end.
 
 setup_harness(_Test, _Args) ->
-%%     Path = relpath(root),
+    Path = relpath(root),
     Hosts = load_hosts(),
     load_addresses(),
     rt_config:set(rt_hostnames, Hosts),
@@ -32,11 +32,16 @@ setup_harness(_Test, _Args) ->
 
     %% Reset nodes to base state
     lager:info("Resetting nodes to fresh state"),
-%%     rt:pmap(fun(Host) ->
-%%                     run_git(Host, Path, "reset HEAD --hard"),
-%%                     run_git(Host, Path, "clean -fd")
-%%             end, Hosts),
-    ok.
+    case rt_config:get(preloaded_data, false) of
+        true ->
+            ok; %% No reset with preloaded data
+        false ->
+            rt:pmap(fun(Host) ->
+                            run_git(Host, Path, "reset HEAD --hard"),
+                            run_git(Host, Path, "clean -fd")
+                    end, Hosts),
+            ok
+    end.
 
 get_backends() ->
     Hosts = rt_config:get(rtssh_hosts),
