@@ -60,32 +60,37 @@ confirm() ->
     timer:sleep(?Sleep),
 
     State1 = node_a_leave(State),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State1)),
     
     run_full_sync(State1),
     timer:sleep(?Sleep),
 
     State2 = node_a_down(State1),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State2)),
+
 
     State3 = node_b_down(State2),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State3)),
 
     State4 = node_a_up(State3),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State4)),
+
 %%     run_full_sync(State4),
 %%     timer:sleep(?Sleep),
 
     State5 = node_b_down(State4),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State5)),
+
 
     State6 = node_a_join(State5),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State6)),
+
     run_full_sync(State6),
     timer:sleep(?Sleep),
 
     State7 = node_b_up(State6),
-    timer:sleep(?Sleep),
+    rt:wait_until_no_pending_changes(all_active_nodes(State7)),
+
     run_full_sync(State7),
     rt_bench:stop_bench(),
     timer:sleep(?Sleep),
@@ -104,7 +109,7 @@ run_full_sync(State) ->
     lager:info("run_full_sync ~p -> ~p", [State#state.a_up, State#state.b_up]),
     LeaderA = prepare_cluster(State#state.a_up, State#state.b_up),
     %% Perform fullsync of an empty cluster.
-    rt:wait_until_aae_trees_built(State#state.a_up ++ State#state.b_up),
+    rt:wait_until_aae_trees_built(all_active_nodes(State)),
     {FullsyncTime, _} = timer:tc(repl_util,
                                   start_and_wait_until_fullsync_complete,
                                   [LeaderA]),
@@ -253,6 +258,9 @@ new_state(S, node_a_join, Node) ->
 new_state(S, node_b_join, Node) ->
     S#state{b_left = S#state.b_left -- Node,
             b_up = S#state.b_up ++ Node}.
+
+all_active_nodes(State) ->
+    State#state.a_up ++ State#state.b_up.
 
 
 prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
