@@ -17,11 +17,7 @@
 -record(state, {a_up = [], a_down = [], a_left = [], b_up= [], b_down= [], b_left =[]}).
 
 -define(Conf,
-        [{eleveldb, [
-                     %% Required. Set to your data storage directory
-                     {data_root, " /mnt"}
-                    ]},
-         {riak_kv, [{storage_backend, riak_kv_eleveldb_backend},
+        [{riak_kv, [{storage_backend, riak_kv_eleveldb_backend},
                     {anti_entropy, {on, []}},
                     {anti_entropy_build_limit, {100, 1000}},
                     {anti_entropy_concurrency, 100}
@@ -36,10 +32,19 @@
 -define(SizeA, 5).
 -define(SizeB, 5).
 
--define(Sleep, 300 * 1000).
+-define(Sleep, 5 * 60 * 1000).
 
 confirm() ->
-    {ANodes, BNodes} = repl_util:deploy_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->'),
+    {ANodes, BNodes} =
+        case rt_config:get(preloaded_data, false) of
+            true ->
+                Conf =
+                    [{eleveldb, [{data_root, " /mnt"}]}] ++ ?Conf,
+                repl_util:deploy_clusters_with_rt([{?SizeA, Conf}, {?SizeB, Conf}], '<->');
+            false ->
+                repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->')
+        end,
+
     State = #state{ a_up = ANodes, b_up = BNodes},
     
     AllLoadGens = rt_config:get(perf_loadgens, ["localhost"]),
@@ -59,7 +64,6 @@ confirm() ->
     
     run_full_sync(State1),
     timer:sleep(?Sleep),
-
 
     State2 = node_a_down(State1),
     timer:sleep(?Sleep),
