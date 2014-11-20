@@ -32,7 +32,7 @@
 -define(SizeA, 5).
 -define(SizeB, 5).
 
--define(Sleep, 5 * 60 * 1000).
+-define(Sleep, 1 * 60 * 1000).
 
 confirm() ->
     {ANodes, BNodes} =
@@ -61,35 +61,42 @@ confirm() ->
 
     State1 = node_a_leave(State),
     rt:wait_until_no_pending_changes(all_active_nodes(State1)),
+    rt:wait_until_transfers_complete(all_active_nodes(State1)),
     
     run_full_sync(State1),
     timer:sleep(?Sleep),
 
     State2 = node_a_down(State1),
     rt:wait_until_no_pending_changes(all_active_nodes(State2)),
+    rt:wait_until_transfers_complete(all_active_nodes(State2)),
 
 
     State3 = node_b_down(State2),
     rt:wait_until_no_pending_changes(all_active_nodes(State3)),
+    rt:wait_until_transfers_complete(all_active_nodes(State3)),
+
 
     State4 = node_a_up(State3),
     rt:wait_until_no_pending_changes(all_active_nodes(State4)),
+    rt:wait_until_transfers_complete(all_active_nodes(State4)),
 
-%%     run_full_sync(State4),
-%%     timer:sleep(?Sleep),
 
     State5 = node_b_down(State4),
     rt:wait_until_no_pending_changes(all_active_nodes(State5)),
+    rt:wait_until_transfers_complete(all_active_nodes(State5)),
 
 
     State6 = node_a_join(State5),
     rt:wait_until_no_pending_changes(all_active_nodes(State6)),
+    rt:wait_until_transfers_complete(all_active_nodes(State6)),
+
 
     run_full_sync(State6),
     timer:sleep(?Sleep),
 
     State7 = node_b_up(State6),
     rt:wait_until_no_pending_changes(all_active_nodes(State7)),
+    rt:wait_until_transfers_complete(all_active_nodes(State7)),
 
     run_full_sync(State7),
     rt_bench:stop_bench(),
@@ -261,7 +268,6 @@ new_state(S, node_b_join, Node) ->
 
 all_active_nodes(State) ->
     State#state.a_up ++ State#state.b_up.
-
 
 prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
     lager:info("Prepare cluster for fullsync"),
