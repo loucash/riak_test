@@ -20,9 +20,9 @@
         [{riak_kv, [{storage_backend, riak_kv_eleveldb_backend},
                     {anti_entropy, {on, []}},
                     {anti_entropy_build_limit, {100, 1000}},
-                    {anti_entropy_concurrency, 100}
+                    {anti_entropy_concurrency, 10}
                    ]},
-         {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 10},
+         {riak_repl, [{realtime_connection_rebalance_max_delay_secs, 30},
                       {fullsync_strategy, aae},
                       {fullsync_on_connect, false},
                       {fullsync_interval, disabled}
@@ -32,9 +32,10 @@
 -define(SizeA, 5).
 -define(SizeB, 5).
 
--define(Sleep, 1 * 60 * 1000).
+-define(Sleep, 5 * 60 * 1000).
 
 confirm() ->
+    rt_bench:stop_bench(),
     {ANodes, BNodes} =
         case rt_config:get(preloaded_data, false) of
             true ->
@@ -61,34 +62,30 @@ confirm() ->
 
     State1 = node_a_leave(State),
     rt:wait_until_no_pending_changes(all_active_nodes(State1)),
-    rt:wait_until_transfers_complete(all_active_nodes(State1)),
+    rt:wait_until_transfers_complete(State1#state.a_up),
     
     run_full_sync(State1),
     timer:sleep(?Sleep),
 
     State2 = node_a_down(State1),
     rt:wait_until_no_pending_changes(all_active_nodes(State2)),
-    rt:wait_until_transfers_complete(all_active_nodes(State2)),
-
+    timer:sleep(?Sleep),
 
     State3 = node_b_down(State2),
     rt:wait_until_no_pending_changes(all_active_nodes(State3)),
-    rt:wait_until_transfers_complete(all_active_nodes(State3)),
-
+    timer:sleep(?Sleep),
 
     State4 = node_a_up(State3),
     rt:wait_until_no_pending_changes(all_active_nodes(State4)),
-    rt:wait_until_transfers_complete(all_active_nodes(State4)),
-
+    timer:sleep(?Sleep),
 
     State5 = node_b_down(State4),
     rt:wait_until_no_pending_changes(all_active_nodes(State5)),
-    rt:wait_until_transfers_complete(all_active_nodes(State5)),
-
+    timer:sleep(?Sleep),
 
     State6 = node_a_join(State5),
     rt:wait_until_no_pending_changes(all_active_nodes(State6)),
-    rt:wait_until_transfers_complete(all_active_nodes(State6)),
+    timer:sleep(?Sleep),
 
 
     run_full_sync(State6),
@@ -96,7 +93,7 @@ confirm() ->
 
     State7 = node_b_up(State6),
     rt:wait_until_no_pending_changes(all_active_nodes(State7)),
-    rt:wait_until_transfers_complete(all_active_nodes(State7)),
+    timer:sleep(?Sleep),
 
     run_full_sync(State7),
     rt_bench:stop_bench(),
@@ -133,7 +130,7 @@ start_basho_bench(Nodes, LoadGens) ->
 
 bacho_bench_config(HostList) ->
     BenchRate =
-        rt_config:get(basho_bench_rate, 30),
+        rt_config:get(basho_bench_rate, 25),
     BenchDuration =
         rt_config:get(basho_bench_duration, infinity),
     KeyGen =
@@ -226,15 +223,17 @@ node_b_leave(State, Node) ->
     leave(Node),
     new_state(State, node_b_leave, [Node]).
 node_a_join(State, Node) ->
-    join(Node, "A"),
+    join(Node, hd(State#state.a_up)),
     new_state(State, node_a_join, [Node]).
 node_b_join(State, Node) ->
-    join(Node, lists:first(State#state.b_up)),
+    join(Node, hd(State#state.b_up)),
     new_state(State, node_b_join, [Node]).
 
 leave(Node) ->
     rt:leave(Node).
 join(Node, Node1) ->
+    start(Node),
+    rt:wait_until_pingable(Node),
     rt:staged_join(Node, Node1),
     rt:plan_and_commit(Node1),
     rt:try_nodes_ready([Node], 3, 500).
