@@ -465,7 +465,7 @@ print_test_result({Test, Result, Duration}, Width) ->
     TestString = atom_to_list(Test),
     case Result of
         {Status, Reason} ->
-            io:format("~s: ~s ~p  ~B~n", [string:left(TestString, Width), Status, Reason, Duration]);
+            io:format("~s: ~s ~s  ~B~n", [string:left(TestString, Width), Status, Reason, Duration]);
         pass ->
             io:format("~s: ~s  ~B~n", [string:left(TestString, Width), "pass", Duration])
     end.

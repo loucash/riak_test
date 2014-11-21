@@ -275,9 +275,47 @@ wait_for_upgrade(_Event, _From, _State) ->
                       function().
 test_fun(Properties, {ConfirmMod, ConfirmFun}, MetaData, NotifyPid) ->
     fun() ->
-            TestResult = ConfirmMod:ConfirmFun(Properties, MetaData),
-            ?MODULE:send_event(NotifyPid, test_result(TestResult))
+            %% Exceptions and their handling sucks, but eunit throws
+            %% errors `erlang:error' so here we are
+            try ConfirmMod:ConfirmFun(Properties, MetaData) of
+                TestResult ->
+                    ?MODULE:send_event(NotifyPid, test_result(TestResult))
+            catch
+                _Error:Reason ->
+                    TestResult = format_eunit_error(Reason),
+                    ?MODULE:send_event(NotifyPid, test_result(TestResult))
+            end
     end.
+
+format_eunit_error({assertion_failed, InfoList}) ->
+    LineNum = proplists:get_value(line, InfoList),
+    Expression = proplists:get_value(expression, InfoList),
+    Value = proplists:get_value(value, InfoList),
+    ErrorStr = io_lib:format("Assertion ~s is ~p at line ~B",
+                             [Expression, Value, LineNum]),
+    {fail, ErrorStr};
+format_eunit_error({assertCmd_failed, InfoList}) ->
+    LineNum = proplists:get_value(line, InfoList),
+    Command = proplists:get_value(command, InfoList),
+    Status = proplists:get_value(status, InfoList),
+    ErrorStr = io_lib:format("Command \"~s\" returned a status of ~B at line ~B",
+                             [Command, Status, LineNum]),
+    {fail, ErrorStr};
+format_eunit_error({assertMatch_failed, InfoList}) ->
+    LineNum = proplists:get_value(line, InfoList),
+    Pattern = proplists:get_value(pattern, InfoList),
+    Value = proplists:get_value(value, InfoList),
+    ErrorStr = io_lib:format("Pattern ~s did not match value ~p at line ~B",
+                             [Pattern, Value, LineNum]),
+    {fail, ErrorStr};
+format_eunit_error({assertEqual_failed, InfoList}) ->
+    LineNum = proplists:get_value(line, InfoList),
+    Expression = proplists:get_value(expression, InfoList),
+    Expected = proplists:get_value(expected, InfoList),
+    Value = proplists:get_value(value, InfoList),
+    ErrorStr = io_lib:format("~s = ~p is not equal to expected value ~p at line ~B",
+                             [Expression, Value, Expected, LineNum]),
+    {fail, ErrorStr}.
 
 function_name(confirm, TestModule) ->
     TMString = atom_to_list(TestModule),
