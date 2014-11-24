@@ -918,6 +918,7 @@ all_aae_trees_built(Node, Partitions) ->
     BadOnes = [R || R <- IndexBuilts, R /= true],
     case BadOnes of
         [] ->
+            lager:info("all_aae_trees_built ~p", [Node]),
             true;
         _ ->
             BadOnes
