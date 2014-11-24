@@ -57,12 +57,16 @@ confirm() ->
             start_basho_bench(ANodes, ALoadGens),
             start_basho_bench(BNodes, BLoadGens)
     end,
+    put(test_start, now()),
+
 
     timer:sleep(?Sleep),
 
     State1 = node_a_leave(State),
     rt:wait_until_no_pending_changes(all_active_nodes(State1)),
     rt:wait_until_transfers_complete(State1#state.a_up),
+
+    timer:sleep(?Sleep),
     
     run_full_sync(State1),
     timer:sleep(?Sleep),
@@ -110,14 +114,14 @@ confirm() ->
     pass.
 
 run_full_sync(State) ->
-    lager:info("run_full_sync ~p -> ~p", [State#state.a_up, State#state.b_up]),
+    time_stamp_action(run_full_sync, "A->B"),
     LeaderA = prepare_cluster(State#state.a_up, State#state.b_up),
-    %% Perform fullsync of an empty cluster.
+    
     rt:wait_until_aae_trees_built(all_active_nodes(State)),
     {FullsyncTime, _} = timer:tc(repl_util,
                                   start_and_wait_until_fullsync_complete,
                                   [LeaderA]),
-    lager:info("Fullsync time: ~p s", [FullsyncTime div 1000000]).
+    time_stamp_action(full_done, FullsyncTime div 1000000).
 
 start_basho_bench(Nodes, LoadGens) ->
         PbIps = lists:map(fun(Node) ->
@@ -198,12 +202,14 @@ node_b_up(State, Node) ->
 stop(Node) ->
     rt:stop(Node),
     rt:wait_until_unpingable(Node),
+    time_stamp_action(stop, Node),
     timer:sleep(5000),
     true.
 start(Node) ->
     rt:start(Node),
     rt:wait_until_ready(Node),
     timer:sleep(5000),
+    time_stamp_action(start, Node),
     true.
 
 %%%%%%%% Leave / Join
@@ -230,12 +236,14 @@ node_b_join(State, Node) ->
     new_state(State, node_b_join, [Node]).
 
 leave(Node) ->
+    time_stamp_action(leave, Node),
     rt:leave(Node).
 join(Node, Node1) ->
     start(Node),
     rt:wait_until_pingable(Node),
     rt:staged_join(Node, Node1),
     rt:plan_and_commit(Node1),
+    time_stamp_action(join, Node),
     rt:try_nodes_ready([Node], 3, 500).
 
 %%%%%%%% Update state after action
@@ -278,7 +286,13 @@ prepare_cluster([AFirst|_] = ANodes, [BFirst|_]) ->
     ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
     repl_util:enable_fullsync(LeaderA, "B"),
     rt:wait_until_ring_converged(ANodes), %% Only works when all nodes in ANodes are up.
-
     ?assertEqual(ok, repl_util:wait_for_connection(LeaderA, "B")),
+    lager:info("Prepare cluster for fullsync done"),
     LeaderA.
+
+time_stamp_action(Action, MetaData) ->
+lager:info("repl_test ~p ~p ~p", [time_since_test_start(), Action, MetaData]).
+
+time_since_test_start() ->
+    timer:now_diff(now(), get(test_start)) div 1000000. 
 
