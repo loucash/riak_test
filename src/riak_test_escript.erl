@@ -26,6 +26,8 @@
 -export([main/1]).
 -export([add_deps/1]).
 
+-define(HEADER, [<<"Test">>, <<"Result">>, <<"Reason">>, <<"Test Duration">>]).
+
 main(Args) ->
     {ParsedArgs, HarnessArgs, Tests, _} = prepare(Args),
     Results = execute(Tests, ParsedArgs, HarnessArgs),
@@ -461,35 +463,30 @@ test_summary_fun({Test, {skipped, _}, _}, {{_Pass, _Fail, Skipped}, Width}) ->
         end,
     {{_Pass, _Fail, Skipped+1}, UpdWidth}.
 
-print_test_result({Test, Result, Duration}, Width) ->
+format_test_row({Test, Result, Duration}, _Width) ->
     TestString = atom_to_list(Test),
     case Result of
         {Status, Reason} ->
-            io:format("~s: ~s ~s  ~B~n", [string:left(TestString, Width), Status, Reason, Duration]);
+            [TestString, Status, Reason, Duration];
         pass ->
-            io:format("~s: ~s  ~B~n", [string:left(TestString, Width), "pass", Duration])
+            [TestString, "pass", "N/A", Duration]
     end.
 
 print_summary(TestResults, _CoverResult, Verbose) ->
-    io:format("~nTest Results:~n"),
+    io:format("~nTest Results:~n~n"),
 
-    %% Results = [
-    %%             [atom_to_list(Test) ,
-    %%               proplists:get_value(status, SingleTestResult),
-    %%               proplists:get_value(reason, SingleTestResult)]
-    %%             || {test_result, {Test, Result, Duration}} <- TestResults],
     {StatusCounts, Width} = lists:foldl(fun test_summary_fun/2, {{0,0,0}, 0}, TestResults),
-    %% Width = test_name_width(Results),
 
     case Verbose of
         true ->
-            [print_test_result(Result, Width) || Result <- TestResults];
+            Rows =
+                [format_test_row(Result, Width) || Result <- TestResults],
+            Table = riak_cli_table:autosize_create_table(?HEADER, Rows),
+            io:format("~ts~n", [Table]);
         false ->
             ok
     end,
 
-    %% PassCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= pass end, TestResults)),
-    %% FailCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= fail end, TestResults)),
     {PassCount, FailCount, SkippedCount} = StatusCounts,
     io:format("---------------------------------------------~n"),
     io:format("~w Tests Failed~n", [FailCount]),
@@ -523,14 +520,6 @@ backend_list(Backends) when is_list(Backends) ->
                       Acc ++ "," ++ atom_to_list(X)
               end,
     lists:foldl(FoldFun, [], Backends).
-
-%% results_filter(Result) ->
-%%     case proplists:get_value(status, Result) of
-%%         not_a_runnable_test ->
-%%             false;
-%%         _ ->
-%%             true
-%%     end.
 
 load_tests_in_dir(Dir, SkipTests) ->
     case filelib:is_dir(Dir) of
