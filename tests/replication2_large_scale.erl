@@ -36,15 +36,7 @@
 
 confirm() ->
     rt_bench:stop_bench(),
-    {ANodes, BNodes} =
-        case rt_config:get(preloaded_data, false) of
-            true ->
-                Conf =
-                    [{eleveldb, [{data_root, " /mnt"}]}] ++ ?Conf,
-                repl_util:deploy_clusters_with_rt([{?SizeA, Conf}, {?SizeB, Conf}], '<->');
-            false ->
-                repl_util:create_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB,?Conf}], '<->')
-        end,
+    {ANodes, BNodes} = repl_util:deploy_clusters_with_rt([{?SizeA, ?Conf}, {?SizeB, ?Conf}], '<->'),
 
     State = #state{ a_up = ANodes, b_up = BNodes},
     
