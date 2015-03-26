@@ -377,9 +377,9 @@ proper_exit_status(TestResults) ->
     FailCount = length(lists:filter(fun(X) -> proplists:get_value(status, X) =:= fail end, TestResults)),
     case FailCount > 0 of
         true ->
-            exit(1);
+            halt(1);
         false ->
-            exit(0)
+            ok
     end.
 
 test_name_width(Results) ->
