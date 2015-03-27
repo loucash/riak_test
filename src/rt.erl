@@ -638,6 +638,7 @@ wait_until(Fun, Retry, Delay) when Retry > 0 ->
             {fail, Res};
         _ ->
             timer:sleep(Delay),
+            lager:info("."),
             wait_until(Fun, Retry-1, Delay)
     end.
 
